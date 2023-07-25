@@ -17,7 +17,8 @@ from google.auth.transport.requests import Request
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
 
-    def __init__(self, start_date, end_date, backup_path, num_workers=5):
+    def __init__(self, start_date, end_date, backup_path, num_workers=5, checkpoint_interval=25):
+      
         self.start_date = start_date
         self.end_date = end_date
         self.backup_path = backup_path
@@ -64,6 +65,9 @@ class GooglePhotosDownloader:
 
         self.photos_api = build('photoslibrary', 'v1', static_discovery=False, credentials=creds)
         logging.info("Connected to Google server.")
+
+        # checkpoint_interval decides after how many files the logs should be saved and cleanup should be done.
+        self.checkpoint_interval = checkpoint_interval
 
     def save_lists_to_file(self):
         # Convert lists to dataframes
@@ -138,6 +142,9 @@ class GooglePhotosDownloader:
                 self.downloaded_count += 1
                 self.downloaded_items.append(item)
 
+                # Add the newly downloaded item to the downloaded_items_df dataframe
+                self.downloaded_items_df = pd.concat([self.downloaded_items_df, pd.DataFrame([item])])
+
                 break  # If the download was successful, break the loop
 
             except requests.exceptions.RequestException as e:
@@ -155,7 +162,13 @@ class GooglePhotosDownloader:
                 self.failed_count += 1
                 self.failed_items.append(item)
                 break  # If it's not a network error, don't retry
-
+        
+        # After each download, check if it's time to do a checkpoint
+        total_processed = self.downloaded_count + self.skipped_count + self.failed_count
+        if total_processed > 0 and total_processed % self.checkpoint_interval == 0:
+            logging.info(f"{total_processed} items processed, performing checkpoint...")
+            self.save_lists_to_file()
+            self.cleanup()
 
     def cleanup(self):
         logging.info("Starting cleanup...")
@@ -253,9 +266,9 @@ class GooglePhotosDownloader:
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
-        # Save the lists to the log files
-            self.save_lists_to_file()
-            downloader.cleanup()
+            # Save the lists to the log files
+            logging.info(f"All items processed, performing final checkpoint...")
+            self.save_lists_to_file()   
 
 if __name__ == "__main__":
     try:
