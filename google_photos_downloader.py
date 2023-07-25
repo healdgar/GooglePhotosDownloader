@@ -58,7 +58,7 @@ class GooglePhotosDownloader:
         logging.info("Connected to Google server.")
 
     def save_lists_to_file(self):
-        with open(os.path.join(self.backup_path, 'items.csv'), 'w', newline='') as f:
+        with open(os.path.join(self.backup_path, 'DownloadItems.csv'), 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['index', 'id', 'productUrl', 'baseUrl', 'mimeType', 'mediaMetadata', 'filename', 'status'])  # write header
 
