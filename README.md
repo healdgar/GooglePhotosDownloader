@@ -63,6 +63,11 @@ The script also generates a CSV file named `DownloadItems.csv` in the backup dir
 
 The script retries up to 3 times if a network or SSL error occurs during the download. If an error occurs that is not a network or SSL error, the script does not retry and logs the error. The script also performs a cleanup at the end to retry downloading any items that failed to download.
 
+## Known Issues
+
+- Selecting a high number of threads can have unpredictable SSL exceptions.
+- Sometimes the script quits without an exception or logged response
+
 ## Note
 
 Before running the script, make sure you have enabled the Google Photos API on your Google Cloud Console and downloaded the OAuth 2.0 Client ID. Save the Client ID as `client_secrets.json` in the same directory as the script.
