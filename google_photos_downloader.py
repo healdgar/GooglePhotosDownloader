@@ -256,6 +256,9 @@ class GooglePhotosDownloader:
             self.save_lists_to_file()
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
+        finally:
+        # Save the lists to the log files
+            self.save_lists_to_file()
 
 
 if __name__ == "__main__":
