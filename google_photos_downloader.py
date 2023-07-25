@@ -1,4 +1,5 @@
 import os
+import pandas as pd
 import ssl
 import csv
 import time
@@ -14,7 +15,6 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 class GooglePhotosDownloader:
-
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
 
     def __init__(self, start_date, end_date, backup_path, num_workers=5):
@@ -27,8 +27,16 @@ class GooglePhotosDownloader:
         self.failed_count = 0
         self.total_file_size = 0
         self.failed_items = []
-        self.downloaded_items = []
         self.skipped_items = []
+        
+        # Load previously downloaded items
+        self.downloaded_items_path = os.path.join(self.backup_path, 'DownloadItems.csv')
+        if os.path.exists(self.downloaded_items_path):
+            self.downloaded_items_df = pd.read_csv(self.downloaded_items_path)
+            self.downloaded_items = self.downloaded_items_df[self.downloaded_items_df['status'] == 'downloaded'].to_dict('records')
+        else:
+            self.downloaded_items = []
+            self.downloaded_items_df = pd.DataFrame()
 
         # Create a session
         self.session = requests.Session()
@@ -58,26 +66,30 @@ class GooglePhotosDownloader:
         logging.info("Connected to Google server.")
 
     def save_lists_to_file(self):
-        with open(os.path.join(self.backup_path, 'DownloadItems.csv'), 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['index', 'id', 'productUrl', 'baseUrl', 'mimeType', 'mediaMetadata', 'filename', 'status'])  # write header
+        # Convert lists to dataframes
+        downloaded_items_df = pd.DataFrame(self.downloaded_items)
+        downloaded_items_df['status'] = 'downloaded'  # Set status for downloaded items
 
-            for item in self.downloaded_items:
-                item['status'] = 'downloaded'
-                writer.writerow(item.values())
+        skipped_items_df = pd.DataFrame(self.skipped_items)
+        skipped_items_df['status'] = 'skipped'  # Set status for skipped items
 
-            for item in self.skipped_items:
-                item['status'] = 'skipped'
-                writer.writerow(item.values())
+        failed_items_df = pd.DataFrame(self.failed_items)
+        failed_items_df['status'] = 'failed'  # Set status for failed items
 
-            for item in self.failed_items:
-                item['status'] = 'failed'
-                writer.writerow(item.values())
+        # Concatenate the dataframes
+        items_df = pd.concat([downloaded_items_df, skipped_items_df, failed_items_df])
 
+        # Save to CSV
+        items_df.to_csv(self.downloaded_items_path, index=False)
 
-
-
+        
     def download_image(self, item):
+        # Before downloading, check if the item has already been downloaded
+        if item['id'] in self.downloaded_items_df['id'].values:
+            logging.info(f"Item {item['filename']} already downloaded, skipping")
+            self.skipped_count += 1
+            self.skipped_items.append(item)
+            return
         # Create a session for this thread
         session = requests.Session()
 
@@ -109,10 +121,8 @@ class GooglePhotosDownloader:
                 if os.path.exists(file_path):
                     logging.info(f"File {file_path} already exists, skipping")
                     self.skipped_count += 1
-                    self.skipped_items.append(item)
+                    self.downloaded_items.append(item)  # Add the item to the downloaded_items list
                     return
-
-                logging.info(f"Downloading {item['filename']}")
 
                 # Save image
                 with open(file_path, "wb") as f:
@@ -149,13 +159,34 @@ class GooglePhotosDownloader:
 
     def cleanup(self):
         logging.info("Starting cleanup...")
-        for item in self.failed_items:
-            try:
-                self.download_image(item)
-                self.failed_items.remove(item)  # Remove the item from the list of failed items if it downloads successfully
-            except Exception as e:
-                logging.error(f"Error downloading {item['filename']} during cleanup: {e}")
+        
+        # Load downloaded and failed items from the CSV
+        downloaded_items_df = pd.read_csv(self.downloaded_items_path)
+        downloaded_items = downloaded_items_df[downloaded_items_df['status'] == 'downloaded'].to_dict('records')
+        failed_items = downloaded_items_df[downloaded_items_df['status'] == 'failed'].to_dict('records')
+
+        # Check for any failed items that have been downloaded
+        for item in failed_items:
+            # Check if the item is in the downloaded items list
+            if any(d_item['id'] == item['id'] for d_item in downloaded_items):
+                logging.info(f"Item {item['filename']} has been downloaded but is listed as failed, removing from failed items list")
+                failed_items.remove(item)
+            else:
+                # Try to download the item again
+                try:
+                    self.download_image(item)
+                    failed_items.remove(item)  # If successful, remove the item from the failed items list
+                except Exception as e:
+                    logging.error(f"Error downloading {item['filename']} during cleanup: {e}")
+        
+        # Update the failed_items list
+        self.failed_items = failed_items
+
+        # Save the updated lists to the CSV
+        self.save_lists_to_file()
+
         logging.info("Finished cleanup.")
+
 
     def download_photos(self):
         try:
