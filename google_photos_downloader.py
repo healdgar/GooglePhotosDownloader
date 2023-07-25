@@ -86,7 +86,7 @@ class GooglePhotosDownloader:
     def download_image(self, item):
         # Before downloading, check if the item has already been downloaded
         if item['id'] in self.downloaded_items_df['id'].values:
-            logging.info(f"Item {item['filename']} already downloaded, skipping")
+            logging.info(f"Item {item['filename']} already downloaded and logged to CSV, skipping")
             self.skipped_count += 1
             self.skipped_items.append(item)
             return
@@ -119,7 +119,7 @@ class GooglePhotosDownloader:
 
                 # Check if file exists
                 if os.path.exists(file_path):
-                    logging.info(f"File {file_path} already exists, skipping")
+                    logging.info(f"File {file_path} already exists in path, skipping")
                     self.skipped_count += 1
                     self.downloaded_items.append(item)  # Add the item to the downloaded_items list
                     return
@@ -160,24 +160,29 @@ class GooglePhotosDownloader:
     def cleanup(self):
         logging.info("Starting cleanup...")
         
-        # Load downloaded and failed items from the CSV
-        downloaded_items_df = pd.read_csv(self.downloaded_items_path)
-        downloaded_items = downloaded_items_df[downloaded_items_df['status'] == 'downloaded'].to_dict('records')
-        failed_items = downloaded_items_df[downloaded_items_df['status'] == 'failed'].to_dict('records')
+        # Load downloaded, failed and skipped items from the CSV
+        items_df = pd.read_csv(self.downloaded_items_path)
+        downloaded_items = items_df[items_df['status'] == 'downloaded'].to_dict('records')
+        failed_items = items_df[items_df['status'] == 'failed'].to_dict('records')
+        skipped_items = items_df[items_df['status'] == 'skipped'].to_dict('records')
 
-        # Check for any failed items that have been downloaded
-        for item in failed_items:
-            # Check if the item is in the downloaded items list
-            if any(d_item['id'] == item['id'] for d_item in downloaded_items):
-                logging.info(f"Item {item['filename']} has been downloaded but is listed as failed, removing from failed items list")
-                failed_items.remove(item)
-            else:
-                # Try to download the item again
-                try:
-                    self.download_image(item)
-                    failed_items.remove(item)  # If successful, remove the item from the failed items list
-                except Exception as e:
-                    logging.error(f"Error downloading {item['filename']} during cleanup: {e}")
+        # Check for any redundant entries in failed and skipped items
+        redundant_failed_items = [item for item in failed_items if any(d_item['id'] == item['id'] for d_item in downloaded_items)]
+        redundant_skipped_items = [item for item in skipped_items if any(d_item['id'] == item['id'] for d_item in downloaded_items)]
+
+        # Remove redundant entries from failed and skipped items
+        failed_items = [item for item in failed_items if item not in redundant_failed_items]
+        skipped_items = [item for item in skipped_items if item not in redundant_skipped_items]
+
+        # Update the failed_items and skipped_items lists
+        self.failed_items = failed_items
+        self.skipped_items = skipped_items
+
+        # Save the updated lists to the CSV
+        self.save_lists_to_file()
+
+        logging.info("Finished cleanup.")
+
         
         # Update the failed_items list
         self.failed_items = failed_items
@@ -259,7 +264,7 @@ class GooglePhotosDownloader:
         finally:
         # Save the lists to the log files
             self.save_lists_to_file()
-
+            downloader.cleanup()
 
 if __name__ == "__main__":
     try:
