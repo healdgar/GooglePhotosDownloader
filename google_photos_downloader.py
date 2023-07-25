@@ -183,15 +183,6 @@ class GooglePhotosDownloader:
 
         logging.info("Finished cleanup.")
 
-        
-        # Update the failed_items list
-        self.failed_items = failed_items
-
-        # Save the updated lists to the CSV
-        self.save_lists_to_file()
-
-        logging.info("Finished cleanup.")
-
 
     def download_photos(self):
         try:
