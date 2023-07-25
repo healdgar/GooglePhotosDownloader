@@ -23,6 +23,7 @@ class GooglePhotosDownloader:
         self.downloaded_count = 0
         self.skipped_count = 0  # Initialize the counter for skipped images
         self.failed_count = 0  # Initialize the counter for failed downloads
+        self.total_file_size = 0  # Initialize the total file size
 
         # Create a session
         self.session = requests.Session()
@@ -49,7 +50,8 @@ class GooglePhotosDownloader:
                 pickle.dump(creds, token_file)
 
         self.photos_api = build('photoslibrary', 'v1', static_discovery=False, credentials=creds)
-    
+        logging.info("Connected to Google server.")
+
     def download_image(self, item):
         # Create a session for this thread
         session = requests.Session()
@@ -94,8 +96,9 @@ class GooglePhotosDownloader:
                 file_size_bytes = os.path.getsize(file_path)
                 file_size_kb = file_size_bytes / 1024
                 file_size_mb = file_size_kb / 1024
+                self.total_file_size += file_size_mb
 
-                logging.info(f"Finished processing {file_path}, size: {file_size_mb:.2f} MB")
+                logging.info(f"Finished downloading {file_path}, size: {file_size_mb:.2f} MB")
                 self.downloaded_count += 1  # Increment the downloaded counter
 
                 break  # If the download was successful, break the loop
@@ -171,6 +174,7 @@ class GooglePhotosDownloader:
 
         logging.info(f"Downloaded {self.downloaded_count} images between the dates of {self.start_date} and {self.end_date} to the {self.backup_path}.")  # Print tally report
         logging.info(f"Downloaded {self.downloaded_count} images, skipped {self.skipped_count} images, failed to download {self.failed_count} images.")
+        logging.info(f"Total file size downloaded: {self.total_file_size:.2f} MB")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Google Photos Downloader')
