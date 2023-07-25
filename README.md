@@ -12,7 +12,13 @@ This project is a script to download your Google Photos between specified dates 
 ## Requirements
 
 - Python 3
-- Google Photos Library API credentials (client_secrets.json)
+- Google Photos Library API credentials (client_secrets.json file)
+- requests
+- google-api-python-client
+- google-auth-httplib2
+- google-auth-oauthlib
+- python-dateutil
+
 
 ## Usage
 
