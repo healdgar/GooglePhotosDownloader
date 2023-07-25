@@ -1,4 +1,5 @@
 import os
+import csv
 import time
 import argparse
 import logging
@@ -54,13 +55,26 @@ class GooglePhotosDownloader:
 
         self.photos_api = build('photoslibrary', 'v1', static_discovery=False, credentials=creds)
         logging.info("Connected to Google server.")
+
     def save_lists_to_file(self):
-        with open('downloaded_items.pickle', 'wb') as f:
-            pickle.dump(self.downloaded_items, f)
-        with open('skipped_items.pickle', 'wb') as f:
-            pickle.dump(self.skipped_items, f)
-        with open('failed_items.pickle', 'wb') as f:
-            pickle.dump(self.failed_items, f)
+        with open(os.path.join(self.backup_path, 'items.csv'), 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['index', 'id', 'productUrl', 'baseUrl', 'mimeType', 'mediaMetadata', 'filename', 'status'])  # write header
+
+            for item in self.downloaded_items:
+                item['status'] = 'downloaded'
+                writer.writerow(item.values())
+
+            for item in self.skipped_items:
+                item['status'] = 'skipped'
+                writer.writerow(item.values())
+
+            for item in self.failed_items:
+                item['status'] = 'failed'
+                writer.writerow(item.values())
+
+
+
 
     def download_image(self, item):
         # Create a session for this thread
@@ -126,10 +140,11 @@ class GooglePhotosDownloader:
                 self.failed_items.append(item)
                 time.sleep(1)  # Wait for 1 second before retrying
             except Exception as e:
-                logging.error(f"Error downloading {item['filename']}: {e}")
+                logging.error(f"Unhandled exception in download_image: {e}")
                 self.failed_count += 1
                 self.failed_items.append(item)
                 break  # If it's not a network error, don't retry
+
 
     def cleanup(self):
         logging.info("Starting cleanup...")
@@ -142,92 +157,98 @@ class GooglePhotosDownloader:
         logging.info("Finished cleanup.")
 
     def download_photos(self):
-        # Parse date
-        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d")
-        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d")
+        try:
+            # Parse date
+            start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d")
+            end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d")
 
-        # Construct date filter
-        date_filter = {
-            "dateFilter": {
-                "ranges": [
-                    {
-                        "startDate": {
-                            "year": start_datetime.year,
-                            "month": start_datetime.month,
-                            "day": start_datetime.day
-                        },
-                        "endDate": {
-                            "year": end_datetime.year,
-                            "month": end_datetime.month,
-                            "day": end_datetime.day
+            # Construct date filter
+            date_filter = {
+                "dateFilter": {
+                    "ranges": [
+                        {
+                            "startDate": {
+                                "year": start_datetime.year,
+                                "month": start_datetime.month,
+                                "day": start_datetime.day
+                            },
+                            "endDate": {
+                                "year": end_datetime.year,
+                                "month": end_datetime.month,
+                                "day": end_datetime.day
+                            }
                         }
-                    }
-                ]
+                    ]
+                }
             }
-        }
 
-        logging.info("Downloading media...")
+            logging.info("Downloading media...")
 
-        # Pagination 
-        page_token = None
+            # Pagination 
+            page_token = None
 
-        while True:
-            # API search
-            results = self.photos_api.mediaItems().search(
-                body={
-                    'pageToken': page_token,
-                    'filters': date_filter  
-                } 
-            ).execute()
+            while True:
+                # API search
+                results = self.photos_api.mediaItems().search(
+                    body={
+                        'pageToken': page_token,
+                        'filters': date_filter  
+                    } 
+                ).execute()
 
-            items = results.get('mediaItems')
-            if not items:
-                logging.info("No more results")
-                break
+                items = results.get('mediaItems')
+                if not items:
+                    logging.info("No more results")
+                    break
 
-            # Process each item
-            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                # Add the index to each item
-                items_with_index = [{'index': i, **item} for i, item in enumerate(items)]
-                
                 # Process each item
-                for item in items_with_index:
-                    executor.submit(self.download_image, item)
+                with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                    # Add the index to each item
+                    items_with_index = [{'index': i, **item} for i, item in enumerate(items)]
+                    
+                    # Process each item
+                    for item in items_with_index:
+                        executor.submit(self.download_image, item)
 
-            # Next page
-            page_token = results.get('nextPageToken')
-            if not page_token:
-                break  # If there's no next page, break the loop
+                # Next page
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break  # If there's no next page, break the loop
 
-            time.sleep(1)
+                time.sleep(1)
 
-        self.cleanup()
-        self.save_lists_to_file()  # Save the lists to a file
-        logging.info(f"Downloaded {self.downloaded_count} images, skipped {self.skipped_count} images, failed to download {self.failed_count} images.")
-        logging.info(f"Total file size downloaded: {self.total_file_size:.2f} MB")
-
+            self.cleanup()
+            logging.info(f"Downloaded {self.downloaded_count} images, skipped {self.skipped_count} images, failed to download {self.failed_count} images.")
+            logging.info(f"Total file size downloaded: {self.total_file_size:.2f} MB")
+            # Save the lists to the log files
+            self.save_lists_to_file()
+        except Exception as e:
+            logging.error(f"An unexpected error occurred in download_photos: {e}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Google Photos Downloader')
-    parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')
-    parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
-    parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
-    parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
+    try:
+        parser = argparse.ArgumentParser(description='Google Photos Downloader')
+        parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')
+        parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
+        parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
+        parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
-    logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
+        logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # Add a StreamHandler to print messages to the console
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(console_handler)
+        # Add a StreamHandler to print messages to the console
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(console_handler)
 
-    downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
-    downloader.download_photos()
+        downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
+        downloader.download_photos()
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
 
-# Sample usage: python google_photos_downloader.py --start_date 1800-01-01 --end_date 2002-12-31 --backup_path c:\photos --num_workers 20
+# Sample usage: python google_photos_downloader.py --start_date 1800-01-01 --end_date 2002-12-31 --backup_path c:\photos --num_workers 16
