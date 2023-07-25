@@ -65,7 +65,7 @@ The script retries up to 3 times if a network or SSL error occurs during the dow
 
 ## Known Issues
 
-- Selecting a high number of threads can have unpredictable SSL exceptions.
+- Selecting a high number of threads can have unpredictable SSL exceptions, particularlly true if there are a high number of "skips", so when retrying a date range, lower the number of threads to avoid overloading the Google API.
 - Sometimes the script quits without an exception or logged response
 
 ## Note
