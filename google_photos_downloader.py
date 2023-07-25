@@ -21,9 +21,12 @@ class GooglePhotosDownloader:
         self.backup_path = backup_path
         self.num_workers = num_workers
         self.downloaded_count = 0
-        self.skipped_count = 0  # Initialize the counter for skipped images
-        self.failed_count = 0  # Initialize the counter for failed downloads
-        self.total_file_size = 0  # Initialize the total file size
+        self.skipped_count = 0
+        self.failed_count = 0
+        self.total_file_size = 0
+        self.failed_items = []
+        self.downloaded_items = []
+        self.skipped_items = []
 
         # Create a session
         self.session = requests.Session()
@@ -51,6 +54,13 @@ class GooglePhotosDownloader:
 
         self.photos_api = build('photoslibrary', 'v1', static_discovery=False, credentials=creds)
         logging.info("Connected to Google server.")
+    def save_lists_to_file(self):
+        with open('downloaded_items.pickle', 'wb') as f:
+            pickle.dump(self.downloaded_items, f)
+        with open('skipped_items.pickle', 'wb') as f:
+            pickle.dump(self.skipped_items, f)
+        with open('failed_items.pickle', 'wb') as f:
+            pickle.dump(self.failed_items, f)
 
     def download_image(self, item):
         # Create a session for this thread
@@ -83,7 +93,8 @@ class GooglePhotosDownloader:
                 # Check if file exists
                 if os.path.exists(file_path):
                     logging.info(f"File {file_path} already exists, skipping")
-                    self.skipped_count += 1  # Increment the skipped counter
+                    self.skipped_count += 1
+                    self.skipped_items.append(item)
                     return
 
                 logging.info(f"Downloading {item['filename']}")
@@ -99,18 +110,36 @@ class GooglePhotosDownloader:
                 self.total_file_size += file_size_mb
 
                 logging.info(f"Finished downloading {file_path}, size: {file_size_mb:.2f} MB")
-                self.downloaded_count += 1  # Increment the downloaded counter
+                self.downloaded_count += 1
+                self.downloaded_items.append(item)
 
                 break  # If the download was successful, break the loop
 
             except requests.exceptions.RequestException as e:
                 logging.error(f"Network error downloading {item['filename']}: {e}")
-                self.failed_count += 1  # Increment the failed counter
+                self.failed_count += 1
+                self.failed_items.append(item)
+                time.sleep(1)  # Wait for 1 second before retrying
+            except ssl.SSLError as e:
+                logging.error(f"SSL error downloading {item['filename']}: {e}")
+                self.failed_count += 1
+                self.failed_items.append(item)
                 time.sleep(1)  # Wait for 1 second before retrying
             except Exception as e:
                 logging.error(f"Error downloading {item['filename']}: {e}")
-                self.failed_count += 1  # Increment the failed counter
+                self.failed_count += 1
+                self.failed_items.append(item)
                 break  # If it's not a network error, don't retry
+
+    def cleanup(self):
+        logging.info("Starting cleanup...")
+        for item in self.failed_items:
+            try:
+                self.download_image(item)
+                self.failed_items.remove(item)  # Remove the item from the list of failed items if it downloads successfully
+            except Exception as e:
+                logging.error(f"Error downloading {item['filename']} during cleanup: {e}")
+        logging.info("Finished cleanup.")
 
     def download_photos(self):
         # Parse date
@@ -172,9 +201,12 @@ class GooglePhotosDownloader:
 
             time.sleep(1)
 
-        logging.info(f"Downloaded {self.downloaded_count} images between the dates of {self.start_date} and {self.end_date} to the {self.backup_path}.")  # Print tally report
+        self.cleanup()
+        self.save_lists_to_file()  # Save the lists to a file
         logging.info(f"Downloaded {self.downloaded_count} images, skipped {self.skipped_count} images, failed to download {self.failed_count} images.")
         logging.info(f"Total file size downloaded: {self.total_file_size:.2f} MB")
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Google Photos Downloader')
@@ -188,5 +220,14 @@ if __name__ == "__main__":
     log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
     logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+    # Add a StreamHandler to print messages to the console
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(console_handler)
+
     downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
     downloader.download_photos()
+
+# Sample usage: python google_photos_downloader.py --start_date 1800-01-01 --end_date 2002-12-31 --backup_path c:\photos --num_workers 20
