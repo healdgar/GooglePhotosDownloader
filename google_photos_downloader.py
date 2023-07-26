@@ -1,7 +1,7 @@
 import os
-import pandas as pd
+import concurrent.futures
+import json
 import ssl
-import csv
 import time
 import argparse
 import logging
@@ -18,7 +18,6 @@ class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
 
     def __init__(self, start_date, end_date, backup_path, num_workers=5, checkpoint_interval=25):
-      
         self.start_date = start_date
         self.end_date = end_date
         self.backup_path = backup_path
@@ -30,28 +29,22 @@ class GooglePhotosDownloader:
         self.failed_items = []
         self.skipped_items = []
         
-        # Load previously downloaded items
-        self.downloaded_items_path = os.path.join(self.backup_path, 'DownloadItems.csv')
+        self.downloaded_items_path = os.path.join(self.backup_path, 'DownloadItems.json')
         if os.path.exists(self.downloaded_items_path):
-            self.downloaded_items_df = pd.read_csv(self.downloaded_items_path)
-            self.downloaded_items = self.downloaded_items_df[self.downloaded_items_df['status'] == 'downloaded'].to_dict('records')
+            with open(self.downloaded_items_path, 'r') as f:
+                self.downloaded_items = json.load(f)
         else:
             self.downloaded_items = []
-            self.downloaded_items_df = pd.DataFrame()
 
-        # Create a session
         self.session = requests.Session()
 
-        # OAuth setup
         creds = None
         token_path = 'token.pickle'
         
-        # Load the token if it exists
         if os.path.exists(token_path):
             with open(token_path, 'rb') as token_file:
                 creds = pickle.load(token_file)
         
-        # If no valid token, then authenticate
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
@@ -59,111 +52,126 @@ class GooglePhotosDownloader:
                 flow = InstalledAppFlow.from_client_secrets_file('client_secrets.json', self.SCOPES)
                 creds = flow.run_local_server(port=0)
             
-            # Save the token for next run
             with open(token_path, 'wb') as token_file:
                 pickle.dump(creds, token_file)
 
         self.photos_api = build('photoslibrary', 'v1', static_discovery=False, credentials=creds)
         logging.info("Connected to Google server.")
 
-        # checkpoint_interval decides after how many files the logs should be saved and cleanup should be done.
         self.checkpoint_interval = checkpoint_interval
 
     def save_lists_to_file(self):
-        # Convert lists to dataframes
-        downloaded_items_df = pd.DataFrame(self.downloaded_items)
-        downloaded_items_df['status'] = 'downloaded'  # Set status for downloaded items
+        downloaded_items_list = [{'status': 'downloaded', **item} for item in self.downloaded_items]
+        skipped_items_list = [{'status': 'skipped', **item} for item in self.skipped_items]
+        failed_items_list = [{'status': 'failed', **item} for item in self.failed_items]
 
-        skipped_items_df = pd.DataFrame(self.skipped_items)
-        skipped_items_df['status'] = 'skipped'  # Set status for skipped items
+        try:
+            all_items_list = downloaded_items_list + skipped_items_list + failed_items_list
 
-        failed_items_df = pd.DataFrame(self.failed_items)
-        failed_items_df['status'] = 'failed'  # Set status for failed items
+            with open(self.downloaded_items_path, 'w') as f:
+                json.dump(all_items_list, f, indent=4)
+                
+        except Exception as e:
+            logging.error(f"Error in save_lists_to_file: {e}")
+            logging.debug(f"Downloaded items: {self.downloaded_items}")
+            logging.debug(f"Skipped items: {self.skipped_items}")
+            logging.debug(f"Failed items: {self.failed_items}")
+            raise
 
-        # Concatenate the dataframes
-        items_df = pd.concat([downloaded_items_df, skipped_items_df, failed_items_df])
+    def identify_missing_files(self):
+        try:
+            with open(self.downloaded_items_path, 'r') as f:
+                downloaded_items = json.load(f)
+        except Exception as e:
+            logging.error(f"Error reading downloaded items JSON: {e}")
+            return []
 
-        # Save to CSV
-        items_df.to_csv(self.downloaded_items_path, index=False)
+        if not downloaded_items:
+            logging.info("No downloaded items found.")  
+            return []
 
+        downloaded_item_ids = set(item['id'] for item in downloaded_items)
+
+        current_items = []
+
+        # Pagination logic to retrieve all items
+        request = self.photos_api.mediaItems().list()
+        while request is not None:
+            response = request.execute()
+            current_items.extend(response.get('mediaItems', []))
+            request = self.photos_api.mediaItems().list_next(request, response)
+
+        missing_items = [item for item in current_items 
+                        if item['id'] not in downloaded_item_ids]
+
+        if not missing_items:
+            logging.info("No missing items found.")
+
+        return missing_items
         
     def download_image(self, item):
-        # Before downloading, check if the item has already been downloaded
-        if item['id'] in self.downloaded_items_df['id'].values:
-            logging.info(f"Item {item['filename']} already downloaded and logged to CSV, skipping")
+        downloaded_item_ids = [item['id'] for item in self.downloaded_items]
+        if item['id'] in downloaded_item_ids:
+            logging.info(f"Item {item['filename']} already downloaded and logged to JSON, skipping")
             self.skipped_count += 1
             self.skipped_items.append(item)
             return
-        # Create a session for this thread
+
         session = requests.Session()
 
-        # Delay based on the index of the item
-        time.sleep(item['index'] * 0.6)  # sleep for index * 500 ms
+        time.sleep(item['index'] * 0.6)
 
-        for _ in range(3):  # Retry up to 3 times
+        for _ in range(3):
             try:
                 request = self.photos_api.mediaItems().get(mediaItemId=item['id'])
                 image = request.execute()
-                image_url = image['baseUrl'] + '=d'  # '=d' to get the full resolution image
+                image_url = image['baseUrl'] + '=d'
                 response = session.get(image_url)
 
-                # Get metadata
                 filename = item['filename']
                 creation_time_str = item['mediaMetadata']['creationTime']
 
-                # Parse the creation time string into a datetime object
                 creation_time = parse(creation_time_str)
 
-                # Construct folder path
                 folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
                 os.makedirs(folder, exist_ok=True)
 
-                # Construct file path
                 file_path = os.path.join(folder, filename)
 
-                # Check if file exists
                 if os.path.exists(file_path):
                     logging.info(f"File {file_path} already exists in path, skipping")
                     self.skipped_count += 1
-                    self.downloaded_items.append(item)  # Add the item to the downloaded_items list
-                    return
+                    self.skipped_items.append(item)
+                else:    
+                    with open(file_path, "wb") as f:
+                        f.write(response.content)
 
-                # Save image
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
-    
-                # Get file size
-                file_size_bytes = os.path.getsize(file_path)
-                file_size_kb = file_size_bytes / 1024
-                file_size_mb = file_size_kb / 1024
-                self.total_file_size += file_size_mb
+                    file_size_bytes = os.path.getsize(file_path)
+                    file_size_kb = file_size_bytes / 1024
+                    file_size_mb = file_size_kb / 1024
+                    self.total_file_size += file_size_mb
 
-                logging.info(f"Finished downloading {file_path}, size: {file_size_mb:.2f} MB")
-                self.downloaded_count += 1
-                self.downloaded_items.append(item)
+                    logging.info(f"Finished downloading {file_path}, size: {file_size_mb:.2f} MB")
+                    self.downloaded_count += 1
+                    self.downloaded_items.append(item)
 
-                # Add the newly downloaded item to the downloaded_items_df dataframe
-                self.downloaded_items_df = pd.concat([self.downloaded_items_df, pd.DataFrame([item])])
-
-                break  # If the download was successful, break the loop
-
+                    break
             except requests.exceptions.RequestException as e:
                 logging.error(f"Network error downloading {item['filename']}: {e}")
                 self.failed_count += 1
                 self.failed_items.append(item)
-                time.sleep(1)  # Wait for 1 second before retrying
+                time.sleep(1)
             except ssl.SSLError as e:
                 logging.error(f"SSL error downloading {item['filename']}: {e}")
                 self.failed_count += 1
                 self.failed_items.append(item)
-                time.sleep(1)  # Wait for 1 second before retrying
+                time.sleep(1)
             except Exception as e:
                 logging.error(f"Unhandled exception in download_image: {e}")
                 self.failed_count += 1
                 self.failed_items.append(item)
-                break  # If it's not a network error, don't retry
-        
-        # After each download, check if it's time to do a checkpoint
+                break
+
         total_processed = self.downloaded_count + self.skipped_count + self.failed_count
         if total_processed > 0 and total_processed % self.checkpoint_interval == 0:
             logging.info(f"{total_processed} items processed, performing checkpoint...")
@@ -171,39 +179,34 @@ class GooglePhotosDownloader:
             self.cleanup()
 
     def cleanup(self):
-        logging.info("Starting cleanup...")
-        
-        # Load downloaded, failed and skipped items from the CSV
-        items_df = pd.read_csv(self.downloaded_items_path)
-        downloaded_items = items_df[items_df['status'] == 'downloaded'].to_dict('records')
-        failed_items = items_df[items_df['status'] == 'failed'].to_dict('records')
-        skipped_items = items_df[items_df['status'] == 'skipped'].to_dict('records')
+        try:
+            logging.info("Starting cleanup...")
+            
+            with open(self.downloaded_items_path, 'r') as f:
+                items = json.load(f)
 
-        # Check for any redundant entries in failed and skipped items
-        redundant_failed_items = [item for item in failed_items if any(d_item['id'] == item['id'] for d_item in downloaded_items)]
-        redundant_skipped_items = [item for item in skipped_items if any(d_item['id'] == item['id'] for d_item in downloaded_items)]
+            downloaded_items = [item for item in items if item['status'] == 'downloaded']
+            failed_items = [item for item in items if item['status'] == 'failed']
+            skipped_items = [item for item in items if item['status'] == 'skipped']
 
-        # Remove redundant entries from failed and skipped items
-        failed_items = [item for item in failed_items if item not in redundant_failed_items]
-        skipped_items = [item for item in skipped_items if item not in redundant_skipped_items]
+            self.failed_items = failed_items
+            self.skipped_items = skipped_items
 
-        # Update the failed_items and skipped_items lists
-        self.failed_items = failed_items
-        self.skipped_items = skipped_items
+            self.save_lists_to_file()
 
-        # Save the updated lists to the CSV
-        self.save_lists_to_file()
-
-        logging.info("Finished cleanup.")
-
+            logging.info("Finished cleanup.")
+        except Exception as e:
+            logging.error(f"Error in cleanup: {e}")
+            logging.debug(f"Downloaded items: {self.downloaded_items}")
+            logging.debug(f"Skipped items: {self.skipped_items}")
+            logging.debug(f"Failed items: {self.failed_items}")
+            raise
 
     def download_photos(self):
         try:
-            # Parse date
             start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d")
             end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d")
 
-            # Construct date filter
             date_filter = {
                 "dateFilter": {
                     "ranges": [
@@ -225,11 +228,9 @@ class GooglePhotosDownloader:
 
             logging.info("Downloading media...")
 
-            # Pagination 
             page_token = None
 
             while True:
-                # API search
                 results = self.photos_api.mediaItems().search(
                     body={
                         'pageToken': page_token,
@@ -242,33 +243,35 @@ class GooglePhotosDownloader:
                     logging.info("No more results")
                     break
 
-                # Process each item
                 with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                    # Add the index to each item
                     items_with_index = [{'index': i, **item} for i, item in enumerate(items)]
                     
-                    # Process each item
+                    futures = []
                     for item in items_with_index:
-                        executor.submit(self.download_image, item)
+                        futures.append(executor.submit(self.download_image, item))
 
-                # Next page
+                    for future in concurrent.futures.as_completed(futures):
+                        total_processed = self.downloaded_count + self.skipped_count + self.failed_count
+                        logging.info(f"Total processed: {total_processed}, checkpoint interval: {self.checkpoint_interval}")
+                        if total_processed > 0 and total_processed % self.checkpoint_interval == 0:
+                            logging.info(f"{total_processed} items processed, performing checkpoint...")
+                            self.save_lists_to_file()
+                            self.cleanup()
+
                 page_token = results.get('nextPageToken')
                 if not page_token:
-                    break  # If there's no next page, break the loop
+                    break
 
                 time.sleep(1)
 
-            self.cleanup()
             logging.info(f"Downloaded {self.downloaded_count} images, skipped {self.skipped_count} images, failed to download {self.failed_count} images.")
             logging.info(f"Total file size downloaded: {self.total_file_size:.2f} MB")
-            # Save the lists to the log files
             self.save_lists_to_file()
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
-            # Save the lists to the log files
             logging.info(f"All items processed, performing final checkpoint...")
-            self.save_lists_to_file()   
+            self.save_lists_to_file()
 
 if __name__ == "__main__":
     try:
@@ -277,13 +280,13 @@ if __name__ == "__main__":
         parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
         parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
         parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
+        parser.add_argument('--detect_missing', action='store_true', help='Detect and download missing files')
 
         args = parser.parse_args()
 
         log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
         logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-        # Add a StreamHandler to print messages to the console
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -292,7 +295,10 @@ if __name__ == "__main__":
 
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
         downloader.download_photos()
+        if args.detect_missing:
+            missing_items = downloader.identify_missing_files()
+            for item in missing_items:
+                downloader.download_image(item)
+
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
-
-# Sample usage: python google_photos_downloader.py --start_date 1800-01-01 --end_date 2002-12-31 --backup_path c:\photos --num_workers 16
