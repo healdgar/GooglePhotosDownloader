@@ -9,3 +9,5 @@
 # Ignore all .json files in the root directory (also commonly used for secrets)
 /*.json
 checkcsv.py
+converttojson.py
+compareJSONtofilesys.py

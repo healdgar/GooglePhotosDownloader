@@ -40,6 +40,17 @@ class GooglePhotosDownloader:
 
         creds = None
         token_path = 'token.pickle'
+
+        self.files_dict = {}
+
+        if os.path.exists(self.downloaded_items_path):
+            with open(self.downloaded_items_path, 'r') as f:
+                self.downloaded_items = json.load(f)
+                for item in self.downloaded_items:
+                    if 'filename' in item and 'id' in item and 'mediaMetadata' in item:
+                        if item['filename'] not in self.files_dict:
+                            self.files_dict[item['filename']] = []
+                        self.files_dict[item['filename']].append((item['id'], item['mediaMetadata']))
         
         if os.path.exists(token_path):
             with open(token_path, 'rb') as token_file:
@@ -61,23 +72,41 @@ class GooglePhotosDownloader:
         self.checkpoint_interval = checkpoint_interval
 
     def save_lists_to_file(self):
+        logging.info("Starting to save lists to file...")
+
         downloaded_items_list = [{'status': 'downloaded', **item} for item in self.downloaded_items]
         skipped_items_list = [{'status': 'skipped', **item} for item in self.skipped_items]
         failed_items_list = [{'status': 'failed', **item} for item in self.failed_items]
 
-        try:
-            all_items_list = downloaded_items_list + skipped_items_list + failed_items_list
+        all_items_list = downloaded_items_list + skipped_items_list + failed_items_list
 
+        existing_items_dict = {}
+        if os.path.isfile(self.downloaded_items_path):
+            with open(self.downloaded_items_path, 'r') as f:
+                existing_items_list = json.load(f)
+                existing_items_dict = {item['id']: item for item in existing_items_list}
+        else:
             with open(self.downloaded_items_path, 'w') as f:
-                json.dump(all_items_list, f, indent=4)
-                
-        except Exception as e:
-            logging.error(f"Error in save_lists_to_file: {e}")
-            logging.debug(f"Downloaded items: {self.downloaded_items}")
-            logging.debug(f"Skipped items: {self.skipped_items}")
-            logging.debug(f"Failed items: {self.failed_items}")
-            raise
+                f.write("[]")
 
+        for item in all_items_list:
+            if item['id'] in existing_items_dict:
+                if existing_items_dict[item['id']]['status'] == 'failed' and item['status'] == 'downloaded':
+                    existing_items_dict[item['id']] = item
+            else:
+                existing_items_dict[item['id']] = item
+
+        updated_items_list = list(existing_items_dict.values())
+
+        if os.access(self.downloaded_items_path, os.W_OK):
+            with open(self.downloaded_items_path, 'w') as f:
+                json.dump(updated_items_list, f, indent=4)
+                    
+            logging.info("Successfully saved lists to file.")
+        else:
+            logging.error(f"No write access to the file: {self.downloaded_items_path}")
+
+      
     def identify_missing_files(self):
         try:
             with open(self.downloaded_items_path, 'r') as f:
@@ -111,15 +140,28 @@ class GooglePhotosDownloader:
         
     def download_image(self, item):
         downloaded_item_ids = [item['id'] for item in self.downloaded_items]
-        if item['id'] in downloaded_item_ids:
-            logging.info(f"Item {item['filename']} already downloaded and logged to JSON, skipping")
-            self.skipped_count += 1
-            self.skipped_items.append(item)
+        skipped_item_ids = [item['id'] for item in self.skipped_items]
+        if item['id'] in downloaded_item_ids or item['id'] in skipped_item_ids:
+            logging.info(f"Item {item['filename']} already downloaded or skipped and logged to JSON, skipping")
             return
+
+        if item['filename'] in self.files_dict:
+            for existing_id, existing_metadata in self.files_dict[item['filename']]:
+                if existing_id != item['id']:
+                    if existing_metadata == item['mediaMetadata']:
+                        logging.info(f"Duplicate file found with different ID but same metadata: {item['filename']}")
+                    else:
+                        logging.info(f"Duplicate file found with different ID and different metadata: {item['filename']}")
+                    # Add more code here to handle the situation as you see fit.
+            if item['id'] not in skipped_item_ids:
+                self.skipped_count += 1
+                self.skipped_items.append(item)
+            return
+
 
         session = requests.Session()
 
-        time.sleep(item['index'] * 0.6)
+        time.sleep(item['index'] * 1)
 
         for _ in range(3):
             try:
@@ -141,7 +183,9 @@ class GooglePhotosDownloader:
                 if os.path.exists(file_path):
                     logging.info(f"File {file_path} already exists in path, skipping")
                     self.skipped_count += 1
-                    self.skipped_items.append(item)
+                    if item['id'] not in skipped_item_ids:
+                        self.skipped_items.append(item)
+                    break  # break the loop when file already exists
                 else:    
                     with open(file_path, "wb") as f:
                         f.write(response.content)
@@ -182,19 +226,20 @@ class GooglePhotosDownloader:
         try:
             logging.info("Starting cleanup...")
             
-            with open(self.downloaded_items_path, 'r') as f:
-                items = json.load(f)
+            if os.access(self.downloaded_items_path, os.R_OK):
+                with open(self.downloaded_items_path, 'r') as f:
+                    items = json.load(f)
 
-            downloaded_items = [item for item in items if item['status'] == 'downloaded']
-            failed_items = [item for item in items if item['status'] == 'failed']
-            skipped_items = [item for item in items if item['status'] == 'skipped']
+                items_dict = {item['id']: item for item in items}
+                deduplicated_items_list = list(items_dict.values())
 
-            self.failed_items = failed_items
-            self.skipped_items = skipped_items
+                with open(self.downloaded_items_path, 'w') as f:
+                    json.dump(deduplicated_items_list, f, indent=4)
 
-            self.save_lists_to_file()
+                logging.info("Finished cleanup.")
+            else:
+                logging.error(f"No read access to the file: {self.downloaded_items_path}")
 
-            logging.info("Finished cleanup.")
         except Exception as e:
             logging.error(f"Error in cleanup: {e}")
             logging.debug(f"Downloaded items: {self.downloaded_items}")
@@ -245,21 +290,25 @@ class GooglePhotosDownloader:
 
                 with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
                     items_with_index = [{'index': i, **item} for i, item in enumerate(items)]
-                    
+                                    
                     futures = []
                     for item in items_with_index:
                         futures.append(executor.submit(self.download_image, item))
 
+                    concurrent.futures.wait(futures)
+
                     for future in concurrent.futures.as_completed(futures):
                         total_processed = self.downloaded_count + self.skipped_count + self.failed_count
-                        logging.info(f"Total processed: {total_processed}, checkpoint interval: {self.checkpoint_interval}")
                         if total_processed > 0 and total_processed % self.checkpoint_interval == 0:
+                            logging.info(f"Total processed: {total_processed}, checkpoint interval: {self.checkpoint_interval}")
                             logging.info(f"{total_processed} items processed, performing checkpoint...")
                             self.save_lists_to_file()
-                            self.cleanup()
-
+                            self.cleanup() 
+                              
+                   
                 page_token = results.get('nextPageToken')
                 if not page_token:
+                    logging.info("No more pages")
                     break
 
                 time.sleep(1)
@@ -272,6 +321,7 @@ class GooglePhotosDownloader:
         finally:
             logging.info(f"All items processed, performing final checkpoint...")
             self.save_lists_to_file()
+            self.cleanup()
 
 if __name__ == "__main__":
     try:
