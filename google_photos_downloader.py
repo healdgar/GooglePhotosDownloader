@@ -12,6 +12,8 @@ import requests
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from datetime import timezone
+
 
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
@@ -69,10 +71,25 @@ class GooglePhotosDownloader:
         logging.info("Connected to Google server.")
 
         self.checkpoint_interval = checkpoint_interval
+        self.all_media_items = []  # Initialize all_media_items as an empty list
 
-    def get_all_media_items(self): #this function generates a master index of all media items in the account within the date range, saving to JSON
-        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d")
-        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d")
+    def get_all_media_items(self):
+        # Load existing media items
+        self.all_media_items_path = os.path.join(self.backup_path, 'DownloadItems.json')
+        if os.path.exists(self.all_media_items_path):
+            with open(self.all_media_items_path, 'r') as f:
+                self.all_media_items = json.load(f)
+        else:
+            self.all_media_items = []
+
+        # Convert existing items to a dictionary for easy lookup
+        existing_items_dict = {item['id']: item for item in self.all_media_items}
+
+        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+        # Filter out any items that are outside the date range
+        self.all_media_items = [item for item in self.all_media_items if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime]
 
         date_filter = {
             "dateFilter": {
@@ -93,7 +110,6 @@ class GooglePhotosDownloader:
             }
         }
 
-        all_items = []
         page_token = None
 
         while True:
@@ -110,36 +126,52 @@ class GooglePhotosDownloader:
                 break
 
             for item in items:
-                item['status'] = 'not downloaded'
-                all_items.append(item)
+                if item['id'] not in existing_items_dict:
+                    item['status'] = 'not downloaded'
+                    self.all_media_items.append(item)
 
             page_token = results.get('nextPageToken')
             if not page_token:
                 logging.info("No more pages")
                 break
 
-        return all_items
+        self.save_lists_to_file(self.all_media_items)
 
-    def get_all_downloaded_filepaths(self): #this function generates a list of all filepaths in the backup folder
-        filepaths = []
-        for dirpath, dirnames, filenames in os.walk(self.backup_path):
-            for filename in filenames:
-                filepath = os.path.join(dirpath, filename)
-                filepaths.append(filepath)
-        return filepaths
-    
+    def get_all_downloaded_filepaths(self):
+        # Generate a list of all filepaths in the backup folder
+        all_downloaded_filepaths = []
+        for root_subdir in os.listdir(self.backup_path):
+            root_subdir_path = os.path.join(self.backup_path, root_subdir)
+            if os.path.isdir(root_subdir_path):  # ensure that root_subdir is a directory
+                for dirpath, dirnames, filenames in os.walk(root_subdir_path):
+                    for filename in filenames:
+                        filepath = os.path.join(dirpath, filename)
+                        all_downloaded_filepaths.append(filepath)
+
+        # For each downloaded file, add file_path and file_size to the JSON record if they are missing
+        for filepath in all_downloaded_filepaths:
+            filename = os.path.basename(filepath)
+            for item in self.all_media_items:
+                try:
+                    item_filename = item['filename']
+                except TypeError:
+                    print(f"TypeError for item: {item}")
+                if item_filename == filename:
+                    # Construct the presumed file path
+                    creation_time = parse(item['mediaMetadata']['creationTime'])
+                    presumed_filepath = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month), filename)
+
+                    # Normalize and compare the presumed and actual file paths
+                    if os.path.normpath(presumed_filepath) == os.path.normpath(filepath):
+                        item['file_path'] = filepath  # Update file_path in item
+                        item['file_size'] = os.path.getsize(filepath)  # Update file_size in item
+                        item['status'] = 'verified'  # Set status to 'verified'
+
+        return all_downloaded_filepaths
+
+
     def save_lists_to_file(self, all_items):
         logging.info("Starting to save lists to file...")
-
-        for item in all_items:
-            if item['id'] in [downloaded_item['id'] for downloaded_item in self.downloaded_items]:
-                item['status'] = 'downloaded'
-            elif item['id'] in [skipped_item['id'] for skipped_item in self.skipped_items]:
-                item['status'] = 'skipped'
-            elif item['id'] in [failed_item['id'] for failed_item in self.failed_items]:
-                item['status'] = 'failed'
-            else:
-                item['status'] = 'not downloaded'
 
         if os.access(self.downloaded_items_path, os.W_OK):
             with open(self.downloaded_items_path, 'w') as f:
@@ -148,50 +180,21 @@ class GooglePhotosDownloader:
             logging.info("Successfully saved lists to file.")
         else:
             logging.error(f"No write access to the file: {self.downloaded_items_path}")
-
-
-      
-    def download_missing_files(self, all_items):
-        # Get all downloaded file paths
-        all_downloaded_filepaths = self.get_all_downloaded_filepaths()
-
-        # Convert list of dicts to dict for easy lookup
-        all_items_dict = {item['filename']: item for item in all_items}
-
-        # Check for missing files
-        for filepath in all_downloaded_filepaths:
-            filename = os.path.basename(filepath)
-            if filename not in all_items_dict:
-                item = all_items_dict[filename]
-                self.download_image(item)
-
-        # Update status of all items
-        self.save_lists_to_file(all_items)
-
             
-    def download_image(self, item, all_media_items):
-        downloaded_item_ids = [item['id'] for item in self.downloaded_items]
-        skipped_item_ids = [item['id'] for item in self.skipped_items]
-        if item['id'] in downloaded_item_ids or item['id'] in skipped_item_ids:
-            logging.info(f"Item {item['filename']} already downloaded or skipped and logged to JSON, skipping")
-            return
+    def download_image(self, item):
+        # Parse the creation time
+        creation_time = parse(item['mediaMetadata']['creationTime'])
 
-        if item['filename'] in self.files_dict:
-            for existing_id, existing_metadata in self.files_dict[item['filename']]:
-                if existing_id != item['id']:
-                    if existing_metadata == item['mediaMetadata']:
-                        logging.info(f"Duplicate file found with different ID but same metadata: {item['filename']}")
-                    else:
-                        logging.info(f"Duplicate file found with different ID and different metadata: {item['filename']}")
-                    # Add more code here to handle the situation as you see fit.
-            if item['id'] not in skipped_item_ids:
-                self.skipped_count += 1
-                self.skipped_items.append(item)
+        # Convert the start and end dates to datetime objects
+        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+ 
+        # Skip the download if the item was already downloaded or if it's verified or if its outside the date range
+        if item['status'] == 'downloaded' or item['status'] == 'verified' or creation_time < start_datetime or creation_time > end_datetime:
+        
             return
-
+        
         session = requests.Session()
-
-        time.sleep(item['index'] * 1)
 
         for _ in range(3):
             try:
@@ -212,44 +215,29 @@ class GooglePhotosDownloader:
 
                 if os.path.exists(file_path):
                     logging.info(f"File {file_path} already exists in path, skipping")
-                    self.skipped_count += 1
-                    if item['id'] not in skipped_item_ids:
-                        self.skipped_items.append(item)
+                    item['status'] = 'verified'
+                    # Add the item to the all_media_items list if it's not already there
+                    if item not in self.all_media_items:
+                        self.all_media_items.append(item)
                     break  # break the loop when file already exists
                 else:    
                     with open(file_path, "wb") as f:
                         f.write(response.content)
 
-                    file_size_bytes = os.path.getsize(file_path)
-                    file_size_kb = file_size_bytes / 1024
-                    file_size_mb = file_size_kb / 1024
-                    self.total_file_size += file_size_mb
-
-                    logging.info(f"Finished downloading {file_path}, size: {file_size_mb:.2f} MB")
-                    self.downloaded_count += 1
-                    self.downloaded_items.append(item)
+                    item['file_path'] = file_path  # record the file path
+                    item['file_size'] = os.path.getsize(file_path)  # record the file size
+                    item['status'] = 'downloaded'  # record the status
 
                     break
             except requests.exceptions.RequestException as e:
-                logging.error(f"Network error downloading {item['filename']}: {e}")
-                self.failed_count += 1
-                self.failed_items.append(item)
+                item['status'] = 'failed'
                 time.sleep(1)
             except ssl.SSLError as e:
-                logging.error(f"SSL error downloading {item['filename']}: {e}")
-                self.failed_count += 1
-                self.failed_items.append(item)
+                item['status'] = 'failed'
                 time.sleep(1)
             except Exception as e:
-                logging.error(f"Unhandled exception in download_image: {e}")
-                self.failed_count += 1
-                self.failed_items.append(item)
+                item['status'] = 'failed'
                 break
-
-        total_processed = self.downloaded_count + self.skipped_count + self.failed_count
-        if total_processed > 0 and total_processed % self.checkpoint_interval == 0:
-            logging.info(f"{total_processed} items processed, performing checkpoint...")
-            self.save_lists_to_file(all_media_items)
 
 
     def download_photos(self, all_media_items):
@@ -258,17 +246,12 @@ class GooglePhotosDownloader:
 
             for item in all_media_items:
                 # Download each media item
-                self.download_image(item, all_media_items)
+                self.download_image(item)
 
-            logging.info(f"Downloaded {self.downloaded_count} images, skipped {self.skipped_count} images, failed to download {self.failed_count} images.")
-            logging.info(f"Total file size downloaded: {self.total_file_size:.2f} MB")
-            self.save_lists_to_file(all_media_items)
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
             logging.info(f"All items processed, performing final checkpoint...")
-            self.save_lists_to_file(all_media_items)
-
 
 if __name__ == "__main__":
     try:
@@ -277,7 +260,6 @@ if __name__ == "__main__":
         parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
         parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
         parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
-        parser.add_argument('--detect_missing', action='store_true', help='Detect and download missing files')
         parser.add_argument('--refresh_index', action='store_true', help='Refresh the index by fetching a new one from the server')
 
         args = parser.parse_args()
@@ -294,16 +276,14 @@ if __name__ == "__main__":
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
 
         if args.refresh_index:
-            all_media_items = downloader.get_all_media_items()
-            downloader.save_lists_to_file(all_media_items)  # save newly fetched index to file
+            downloader.get_all_media_items()
         else:
-            with open(downloader.downloaded_items_path, 'r') as f:
-                all_media_items = json.load(f)
+            downloader.all_media_items = json.load(open(downloader.downloaded_items_path, 'r'))
 
-        downloader.download_photos(all_media_items)
+        downloader.get_all_downloaded_filepaths()  # Move this line here
 
-        if args.detect_missing:
-            downloader.download_missing_files(all_media_items)
+        downloader.download_photos(downloader.all_media_items)
+        downloader.save_lists_to_file(downloader.all_media_items)
 
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
