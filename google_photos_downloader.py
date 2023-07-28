@@ -13,7 +13,9 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from datetime import timezone
-
+from datetime import timedelta
+from dateutil.tz import tzlocal
+from dateutil.tz import tzutc
 
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
@@ -42,17 +44,7 @@ class GooglePhotosDownloader:
         creds = None
         token_path = 'token.pickle'
 
-        self.files_dict = {}
-
-        if os.path.exists(self.downloaded_items_path):
-            with open(self.downloaded_items_path, 'r') as f:
-                self.downloaded_items = json.load(f)
-                for item in self.downloaded_items:
-                    if 'filename' in item and 'id' in item and 'mediaMetadata' in item:
-                        if item['filename'] not in self.files_dict:
-                            self.files_dict[item['filename']] = []
-                        self.files_dict[item['filename']].append((item['id'], item['mediaMetadata']))
-        
+       
         if os.path.exists(token_path):
             with open(token_path, 'rb') as token_file:
                 creds = pickle.load(token_file)
@@ -85,12 +77,13 @@ class GooglePhotosDownloader:
         # Convert existing items to a dictionary for easy lookup
         existing_items_dict = {item['id']: item for item in self.all_media_items}
 
-        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        # Convert the start and end dates to UTC
+        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
+        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc())
 
         # Filter out any items that are outside the date range
         self.all_media_items = [item for item in self.all_media_items if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime]
-
+  
         date_filter = {
             "dateFilter": {
                 "ranges": [
@@ -129,6 +122,7 @@ class GooglePhotosDownloader:
                 if item['id'] not in existing_items_dict:
                     item['status'] = 'not downloaded'
                     self.all_media_items.append(item)
+                    print(f"Added item with ID {item['id']} to all_media_items")
 
             page_token = results.get('nextPageToken')
             if not page_token:
@@ -159,7 +153,9 @@ class GooglePhotosDownloader:
                 if item_filename == filename:
                     # Construct the presumed file path
                     creation_time = parse(item['mediaMetadata']['creationTime'])
+                    print(f"filepath filter Creation time: {creation_time}")
                     presumed_filepath = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month), filename)
+                    print(f"Presumed filepath: {presumed_filepath}")
 
                     # Normalize and compare the presumed and actual file paths
                     if os.path.normpath(presumed_filepath) == os.path.normpath(filepath):
@@ -174,34 +170,73 @@ class GooglePhotosDownloader:
         logging.info("Starting to save lists to file...")
 
         if os.access(self.downloaded_items_path, os.W_OK):
+            # Load existing items
+            if os.path.exists(self.downloaded_items_path):
+                with open(self.downloaded_items_path, 'r') as f:
+                    existing_items = json.load(f)
+            else:
+                existing_items = []
+
+            # Convert existing items to a dictionary for easy lookup
+            existing_items_dict = {item['id']: item for item in existing_items}
+
+            # Update existing items and append new ones
+            for item in all_items:
+                if item['id'] in existing_items_dict:
+                    existing_items_dict[item['id']].update(item)  # Update existing item
+                else:
+                    existing_items.append(item)  # Append new item
+
+            # Write the updated items back to the file
             with open(self.downloaded_items_path, 'w') as f:
-                json.dump(all_items, f, indent=4)
+                json.dump(existing_items, f, indent=4)
 
             logging.info("Successfully saved lists to file.")
         else:
             logging.error(f"No write access to the file: {self.downloaded_items_path}")
-            
-    def download_image(self, item):
-        # Parse the creation time
-        creation_time = parse(item['mediaMetadata']['creationTime'])
 
-        # Convert the start and end dates to datetime objects
-        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
- 
+    def download_image(self, item):
+        logging.info(f"Downloading {item['filename']}...")
+        logging.info(f"MimeType: {item['mimeType']}")
+
+        try:
+            response = requests.get(item['baseUrl'] + '=d', stream=True)
+            response.raise_for_status()
+        except Exception as e:
+            logging.error(f"Error downloading {item['filename']}: {e}")
+            return
+
+        # Parse the creation time
+        creation_time = parse(item['mediaMetadata']['creationTime']).astimezone(tzlocal())
+
+        # Convert the start and end dates to UTC
+        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
+        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
+        print(f"Item creation time: {creation_time}")
+        print(f"Start datetime: {start_datetime}")
+        print(f"End datetime: {end_datetime}")
+
         # Skip the download if the item was already downloaded or if it's verified or if its outside the date range
         if item['status'] == 'downloaded' or item['status'] == 'verified' or creation_time < start_datetime or creation_time > end_datetime:
-        
+            
             return
-        
+
         session = requests.Session()
 
         for _ in range(3):
             try:
                 request = self.photos_api.mediaItems().get(mediaItemId=item['id'])
                 image = request.execute()
-                image_url = image['baseUrl'] + '=d'
+                if 'video' in item['mimeType']:  # Check if 'video' is in mimeType
+                    image_url = image['baseUrl'] + '=dv'
+                else:
+                    image_url = image['baseUrl'] + '=d'
                 response = session.get(image_url)
+
+
+                                # Log the status code and headers
+                logging.info(f"Response status code: {response.status_code}")
+                logging.info(f"Response headers: {response.headers}")
 
                 filename = item['filename']
                 creation_time_str = item['mediaMetadata']['creationTime']
@@ -213,12 +248,14 @@ class GooglePhotosDownloader:
 
                 file_path = os.path.join(folder, filename)
 
+                # Check if the file exists in the current folder
                 if os.path.exists(file_path):
-                    logging.info(f"File {file_path} already exists in path, skipping")
                     item['status'] = 'verified'
+                    logging.info(f"File {file_path} already exists in path, verified")
                     # Add the item to the all_media_items list if it's not already there
                     if item not in self.all_media_items:
                         self.all_media_items.append(item)
+                        print(f"Added {file_path} to all_media_items")
                     break  # break the loop when file already exists
                 else:    
                     with open(file_path, "wb") as f:
@@ -227,6 +264,7 @@ class GooglePhotosDownloader:
                     item['file_path'] = file_path  # record the file path
                     item['file_size'] = os.path.getsize(file_path)  # record the file size
                     item['status'] = 'downloaded'  # record the status
+                    print(f"Downloaded {file_path}")
 
                     break
             except requests.exceptions.RequestException as e:
@@ -241,6 +279,9 @@ class GooglePhotosDownloader:
 
 
     def download_photos(self, all_media_items):
+        print(f"Number of items in all_media_items: {len(all_media_items)}")
+        print(f"Statuses of items in all_media_items: {[item['status'] for item in all_media_items]}")
+
         try:
             logging.info("Downloading media...")
 
@@ -274,13 +315,12 @@ if __name__ == "__main__":
         logging.getLogger().addHandler(console_handler)
 
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
+        downloader.get_all_downloaded_filepaths()  
 
         if args.refresh_index:
             downloader.get_all_media_items()
         else:
             downloader.all_media_items = json.load(open(downloader.downloaded_items_path, 'r'))
-
-        downloader.get_all_downloaded_filepaths()  # Move this line here
 
         downloader.download_photos(downloader.all_media_items)
         downloader.save_lists_to_file(downloader.all_media_items)
