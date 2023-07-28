@@ -196,66 +196,56 @@ class GooglePhotosDownloader:
             logging.error(f"No write access to the file: {self.downloaded_items_path}")
 
     def download_image(self, item):
-        logging.info(f"Downloading {item['filename']}...")
-        logging.info(f"MimeType: {item['mimeType']}")
-
-        try:
-            response = requests.get(item['baseUrl'] + '=d', stream=True)
-            response.raise_for_status()
-        except Exception as e:
-            logging.error(f"Error downloading {item['filename']}: {e}")
-            return
+        logging.info(f"considering {item['filename']}...")
 
         # Parse the creation time
         creation_time = parse(item['mediaMetadata']['creationTime']).astimezone(tzlocal())
+        print(f"Creation time: {creation_time}")
 
         # Convert the start and end dates to UTC
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
-        print(f"Item creation time: {creation_time}")
-        print(f"Start datetime: {start_datetime}")
-        print(f"End datetime: {end_datetime}")
+
+        # Convert the creation time to UTC
+        creation_time_utc = creation_time.astimezone(tzutc())
 
         # Skip the download if the item was already downloaded or if it's verified or if its outside the date range
-        if item['status'] == 'downloaded' or item['status'] == 'verified' or creation_time < start_datetime or creation_time > end_datetime:
+        if item['status'] == 'downloaded' or item['status'] == 'verified' or creation_time_utc < start_datetime or creation_time_utc > end_datetime:
             
             return
 
         session = requests.Session()
-
         for _ in range(3):
             try:
+                logging.info("About to make request to Google Photos API...")
+                filename = item['filename']
                 request = self.photos_api.mediaItems().get(mediaItemId=item['id'])
                 image = request.execute()
+                logging.info("Request to Google Photos API completed.")
+
                 if 'video' in item['mimeType']:  # Check if 'video' is in mimeType
                     image_url = image['baseUrl'] + '=dv'
                 else:
                     image_url = image['baseUrl'] + '=d'
-                response = session.get(image_url)
 
+                logging.info(f"Attempting to download {filename}...")  # Log a message before the download attempt
+                response = session.get(image_url, stream=True)
+                logging.info(f"Download attempt finished. Status code: {response.status_code}")  # Log a message after the download attempt
 
-                                # Log the status code and headers
-                logging.info(f"Response status code: {response.status_code}")
-                logging.info(f"Response headers: {response.headers}")
-
-                filename = item['filename']
                 creation_time_str = item['mediaMetadata']['creationTime']
-
                 creation_time = parse(creation_time_str)
-
                 folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
                 os.makedirs(folder, exist_ok=True)
-
                 file_path = os.path.join(folder, filename)
 
                 # Check if the file exists in the current folder
                 if os.path.exists(file_path):
                     item['status'] = 'verified'
-                    logging.info(f"File {file_path} already exists in path, verified")
+                    logging.info(f"File {filename} already exists in path, verified")
                     # Add the item to the all_media_items list if it's not already there
                     if item not in self.all_media_items:
                         self.all_media_items.append(item)
-                        print(f"Added {file_path} to all_media_items")
+                        print(f"Added {filename} to all_media_items")
                     break  # break the loop when file already exists
                 else:    
                     with open(file_path, "wb") as f:
@@ -269,14 +259,16 @@ class GooglePhotosDownloader:
                     break
             except requests.exceptions.RequestException as e:
                 item['status'] = 'failed'
+                logging.error(f"RequestException occurred while trying to get {image_url}: {e}")
                 time.sleep(1)
             except ssl.SSLError as e:
                 item['status'] = 'failed'
+                logging.error(f"SSLError occurred while trying to get {image_url}: {e}")
                 time.sleep(1)
             except Exception as e:
                 item['status'] = 'failed'
+                logging.error(f"An unexpected error occurred: {e}")
                 break
-
 
     def download_photos(self, all_media_items):
         print(f"Number of items in all_media_items: {len(all_media_items)}")
@@ -285,14 +277,40 @@ class GooglePhotosDownloader:
         try:
             logging.info("Downloading media...")
 
-            for item in all_media_items:
-                # Download each media item
-                self.download_image(item)
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                executor.map(self.download_image, all_media_items)
 
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
-            logging.info(f"All items processed, performing final checkpoint...")
+            logging.info(f"threads complete...")
+
+    def report_stats(self):
+        now = datetime.now(timezone.utc)
+        total_size = 0
+        total_files = 0
+        recent_files = 0
+        recent_size = 0
+        status_counts = {}
+        with open(self.downloaded_items_path, 'r') as f:
+            all_items = json.load(f)
+            for item in all_items:
+                total_files += 1
+                total_size += item.get('file_size', 0)
+                creation_time = datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z")
+                if (now - creation_time).days <= 7:
+                    recent_files += 1
+                    recent_size += item.get('file_size', 0)
+                status = item.get('status', 'unknown')
+                status_counts[status] = status_counts.get(status, 0) + 1
+        print(f"Total files: {total_files}")
+        print(f"Total size: {total_size / (1024 * 1024):.2f} MB")
+        print(f"Files added in the last 7 days: {recent_files}")
+        print(f"Size of files added in the last 7 days: {recent_size / (1024 * 1024):.2f} MB")
+        print("File status counts:")
+        for status, count in status_counts.items():
+            print(f"  {status}: {count}")
+
 
 if __name__ == "__main__":
     try:
@@ -324,6 +342,7 @@ if __name__ == "__main__":
 
         downloader.download_photos(downloader.all_media_items)
         downloader.save_lists_to_file(downloader.all_media_items)
+        downloader.report_stats()
 
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
