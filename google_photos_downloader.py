@@ -16,6 +16,35 @@ from datetime import timezone
 from datetime import timedelta
 from dateutil.tz import tzlocal
 from dateutil.tz import tzutc
+import traceback
+
+import time
+import threading
+
+class TokenBucket:
+    def __init__(self, rate, capacity):
+        self.rate = rate
+        self.capacity = capacity
+        self.tokens = capacity
+        self.last_refill = time.monotonic()
+        self.lock = threading.Lock()
+
+    def refill(self):
+        now = time.monotonic()
+        elapsed = now - self.last_refill
+        tokens_to_add = self.rate * elapsed
+        self.tokens = min(self.tokens + tokens_to_add, self.capacity)
+        self.last_refill = now
+
+    def consume(self):
+        with self.lock:
+            self.refill()
+            if self.tokens >= 1:
+                self.tokens -= 1
+                return True
+            else:
+                return False
+
 
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
@@ -197,14 +226,17 @@ class GooglePhotosDownloader:
 
     def download_image(self, item):
         logging.info(f"considering {item['filename']}...")
+        logging.info(f"MimeType: {item['mimeType']}")
 
         # Parse the creation time
         creation_time = parse(item['mediaMetadata']['creationTime']).astimezone(tzlocal())
-        print(f"Creation time: {creation_time}")
+        logging.info(f"Creation time: {creation_time}")
 
         # Convert the start and end dates to UTC
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
+        logging.info(f"Start datetime: {start_datetime}")
+        logging.info(f"End datetime: {end_datetime}")
 
         # Convert the creation time to UTC
         creation_time_utc = creation_time.astimezone(tzutc())
@@ -213,41 +245,57 @@ class GooglePhotosDownloader:
         if item['status'] == 'downloaded' or item['status'] == 'verified' or creation_time_utc < start_datetime or creation_time_utc > end_datetime:
             
             return
+        filename = item['filename']
 
-        session = requests.Session()
-        for _ in range(3):
-            try:
-                logging.info("About to make request to Google Photos API...")
-                filename = item['filename']
-                request = self.photos_api.mediaItems().get(mediaItemId=item['id'])
-                image = request.execute()
-                logging.info("Request to Google Photos API completed.")
+        #creation_time_str = item['mediaMetadata']['creationTime']
+        #creation_time = parse(creation_time_str)
+        folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
+        os.makedirs(folder, exist_ok=True)
+        file_path = os.path.join(folder, filename)
 
-                if 'video' in item['mimeType']:  # Check if 'video' is in mimeType
-                    image_url = image['baseUrl'] + '=dv'
-                else:
-                    image_url = image['baseUrl'] + '=d'
+        # Check if the file exists in the current folder
+        if os.path.exists(file_path):
+            item['status'] = 'verified'
+            logging.info(f"File {file_path} already exists in path, verified")
+            # Add the item to the all_media_items list if it's not already there
+            if item not in self.all_media_items:
+                self.all_media_items.append(item)
+                logging.info(f"Added {file_path} to all_media_items")
+  
+        else:  
 
-                logging.info(f"Attempting to download {filename}...")  # Log a message before the download attempt
-                response = session.get(image_url, stream=True)
-                logging.info(f"Download attempt finished. Status code: {response.status_code}")  # Log a message after the download attempt
+            session = requests.Session()
+            for _ in range(3):
+                while not rate_limiter.consume(): #calls new class TokenBucket
+                    time.sleep(0.1)  # Wait for a short time if no tokens are available
 
-                creation_time_str = item['mediaMetadata']['creationTime']
-                creation_time = parse(creation_time_str)
-                folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
-                os.makedirs(folder, exist_ok=True)
-                file_path = os.path.join(folder, filename)
+                try:
+                    logging.info(f"About to make request to Google Photos API for item {item['id']}...")
+                    request = self.photos_api.mediaItems().get(mediaItemId=item['id'])
+                    image = request.execute()
+                    logging.info(f"Response from Google Photos API: {image}")
+                    logging.info("Request to Google Photos API completed.")
 
-                # Check if the file exists in the current folder
-                if os.path.exists(file_path):
-                    item['status'] = 'verified'
-                    logging.info(f"File {filename} already exists in path, verified")
-                    # Add the item to the all_media_items list if it's not already there
-                    if item not in self.all_media_items:
-                        self.all_media_items.append(item)
-                        print(f"Added {filename} to all_media_items")
-                    break  # break the loop when file already exists
-                else:    
+                    is_video = 'video' in item['mimeType']
+                    logging.info(f"Is the item a video? {is_video}")
+
+                    if 'video' in item['mimeType']:  # Check if 'video' is in mimeType
+                        image_url = image['baseUrl'] + '=dv'
+                        logging.info(f"Video URL: {image_url}")
+                    else:
+                        image_url = image['baseUrl'] + '=d'
+                        logging.info(f"Image URL: {image_url}")
+
+                    logging.info(f"Attempting to download {image_url}...")  # Log a message before the download attempt
+                    response = session.get(image_url, stream=True)
+                    logging.info(f"Download attempt finished. Status code: {response.status_code}")  # Log a message after the download attempt
+
+                    # Log the status code and headers
+                    logging.info(f"Response status code: {response.status_code}")
+                    logging.info(f"Response headers: {response.headers}")
+
+            
+                
                     with open(file_path, "wb") as f:
                         f.write(response.content)
 
@@ -257,18 +305,22 @@ class GooglePhotosDownloader:
                     print(f"Downloaded {file_path}")
 
                     break
-            except requests.exceptions.RequestException as e:
-                item['status'] = 'failed'
-                logging.error(f"RequestException occurred while trying to get {image_url}: {e}")
-                time.sleep(1)
-            except ssl.SSLError as e:
-                item['status'] = 'failed'
-                logging.error(f"SSLError occurred while trying to get {image_url}: {e}")
-                time.sleep(1)
-            except Exception as e:
-                item['status'] = 'failed'
-                logging.error(f"An unexpected error occurred: {e}")
-                break
+                
+                except ssl.SSLError as e:
+                    item['status'] = 'failed'
+                    logging.error(f"SSLError occurred while trying to get {image_url}: {e}")
+                    logging.error(f"Traceback: {traceback.format_exc()}")
+                    time.sleep(1)
+                except requests.exceptions.RequestException as e:
+                    item['status'] = 'failed'
+                    logging.error(f"RequestException occurred while trying to get {image_url}: {e}")
+                    logging.error(f"Traceback: {traceback.format_exc()}")
+                    time.sleep(1)
+                except Exception as e:
+                    item['status'] = 'failed'
+                    logging.error(f"An unexpected error occurred while trying to get {image_url}: {e}")
+                    logging.error(f"Traceback: {traceback.format_exc()}")
+                    break
 
     def download_photos(self, all_media_items):
         print(f"Number of items in all_media_items: {len(all_media_items)}")
@@ -283,34 +335,60 @@ class GooglePhotosDownloader:
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
-            logging.info(f"threads complete...")
-
+            logging.info(f"All items processed, performing final checkpoint...")
+            
     def report_stats(self):
-        now = datetime.now(timezone.utc)
+        
+        # Load the JSON file
+        with open(self.downloaded_items_path, 'r') as f:
+            items = json.load(f)
+
+        # Initialize counters
         total_size = 0
         total_files = 0
-        recent_files = 0
-        recent_size = 0
+        total_images = 0
+        total_videos = 0
+        recent_changes = 0
         status_counts = {}
-        with open(self.downloaded_items_path, 'r') as f:
-            all_items = json.load(f)
-            for item in all_items:
-                total_files += 1
-                total_size += item.get('file_size', 0)
-                creation_time = datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z")
-                if (now - creation_time).days <= 7:
-                    recent_files += 1
-                    recent_size += item.get('file_size', 0)
-                status = item.get('status', 'unknown')
-                status_counts[status] = status_counts.get(status, 0) + 1
-        print(f"Total files: {total_files}")
-        print(f"Total size: {total_size / (1024 * 1024):.2f} MB")
-        print(f"Files added in the last 7 days: {recent_files}")
-        print(f"Size of files added in the last 7 days: {recent_size / (1024 * 1024):.2f} MB")
-        print("File status counts:")
-        for status, count in status_counts.items():
-            print(f"  {status}: {count}")
 
+        # Get the current date and time
+        now = datetime.now(timezone.utc)
+
+        for item in items:
+            # Update the total size
+            if item.get('status') in ['downloaded', 'verified'] and 'file_size' in item:
+                total_size += item['file_size']
+
+            # Update the total number of files
+            total_files += 1
+
+            # Update the total number of images and videos
+            if 'image' in item['mimeType']:
+                total_images += 1
+            elif 'video' in item['mimeType']:
+                total_videos += 1
+
+            # Check for recent changes
+            creation_time = datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z")
+            if (now - creation_time).days <= 7:  # Change this to the desired number of days
+                recent_changes += 1
+            
+            # Count the statuses
+            status = item.get('status')
+            if status not in status_counts:
+                status_counts[status] = 1
+            else:
+                status_counts[status] += 1
+
+        # Print the stats
+        print(f"Total size: {total_size} bytes")
+        print(f"Total files: {total_files}")
+        print(f"Total images: {total_images}")
+        print(f"Total videos: {total_videos}")
+        print(f"Recent changes: {recent_changes}")
+        # Print the status counts
+        for status, count in status_counts.items():
+            print(f"Status '{status}': {count} items")
 
 if __name__ == "__main__":
     try:
@@ -320,8 +398,14 @@ if __name__ == "__main__":
         parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
         parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
         parser.add_argument('--refresh_index', action='store_true', help='Refresh the index by fetching a new one from the server')
+        parser.add_argument('--stats_only', action='store_true', help='Only report status of items in the index')
 
         args = parser.parse_args()
+
+        if args.stats_only:
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
+            downloader.report_stats()
+            exit()
 
         log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
         logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -331,6 +415,11 @@ if __name__ == "__main__":
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         console_handler.setFormatter(formatter)
         logging.getLogger().addHandler(console_handler)
+
+        rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
+        #of the Google Photos API and the requirements of your application. For example, 
+        #if the API allows 10 requests per second and a maximum of 100 requests 
+        # per 10 seconds, you could set rate=10 and capacity=100.
 
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
         downloader.get_all_downloaded_filepaths()  
