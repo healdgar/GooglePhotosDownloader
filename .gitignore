@@ -11,8 +11,13 @@
 checkcsv.py
 converttojson.py
 compareJSONtofilesys.py
+<<<<<<< HEAD
 renameinjson.py
 renamebackupfiles.py
 checkforindexdupes.py
 comparison_results.csv
 .gitignore
+=======
+comparison_results.csv
+checkforindexdupes.py
+>>>>>>> 2b2d33019c82b7b36b7aeb463f796f1e9bedc266

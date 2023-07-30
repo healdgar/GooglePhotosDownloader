@@ -1,5 +1,4 @@
 import os
-import concurrent.futures
 import json
 import ssl
 import time
@@ -13,6 +12,39 @@ import requests
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from datetime import timezone
+from datetime import timedelta
+from dateutil.tz import tzlocal
+from dateutil.tz import tzutc
+import traceback
+
+import time
+import threading
+
+class TokenBucket:
+    def __init__(self, rate, capacity):
+        self.rate = rate
+        self.capacity = capacity
+        self.tokens = capacity
+        self.last_refill = time.monotonic()
+        self.lock = threading.Lock()
+
+    def refill(self):
+        now = time.monotonic()
+        elapsed = now - self.last_refill
+        tokens_to_add = self.rate * elapsed
+        self.tokens = min(self.tokens + tokens_to_add, self.capacity)
+        self.last_refill = now
+
+    def consume(self):
+        with self.lock:
+            self.refill()
+            if self.tokens >= 1:
+                self.tokens -= 1
+                return True
+            else:
+                return False
+
 
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
@@ -41,17 +73,7 @@ class GooglePhotosDownloader:
         creds = None
         token_path = 'token.pickle'
 
-        self.files_dict = {}
-
-        if os.path.exists(self.downloaded_items_path):
-            with open(self.downloaded_items_path, 'r') as f:
-                self.downloaded_items = json.load(f)
-                for item in self.downloaded_items:
-                    if 'filename' in item and 'id' in item and 'mediaMetadata' in item:
-                        if item['filename'] not in self.files_dict:
-                            self.files_dict[item['filename']] = []
-                        self.files_dict[item['filename']].append((item['id'], item['mediaMetadata']))
-        
+       
         if os.path.exists(token_path):
             with open(token_path, 'rb') as token_file:
                 creds = pickle.load(token_file)
@@ -70,246 +92,72 @@ class GooglePhotosDownloader:
         logging.info("Connected to Google server.")
 
         self.checkpoint_interval = checkpoint_interval
+        self.all_media_items = {}  # Initialize all_media_items as an empty dictionary
 
-    def save_lists_to_file(self):
-        logging.info("Starting to save lists to file...")
-
-        downloaded_items_list = [{'status': 'downloaded', **item} for item in self.downloaded_items]
-        skipped_items_list = [{'status': 'skipped', **item} for item in self.skipped_items]
-        failed_items_list = [{'status': 'failed', **item} for item in self.failed_items]
-
-        all_items_list = downloaded_items_list + skipped_items_list + failed_items_list
-
-        existing_items_dict = {}
-        if os.path.isfile(self.downloaded_items_path):
-            with open(self.downloaded_items_path, 'r') as f:
-                existing_items_list = json.load(f)
-                existing_items_dict = {item['id']: item for item in existing_items_list}
+    def get_all_media_items(self):
+        # Load existing media items
+        self.all_media_items_path = os.path.join(self.backup_path, 'DownloadItems.json')
+        if os.path.exists(self.all_media_items_path):
+            with open(self.all_media_items_path, 'r') as f:
+                self.all_media_items = json.load(f)
         else:
-            with open(self.downloaded_items_path, 'w') as f:
-                f.write("[]")
+            self.all_media_items = {}
 
-        for item in all_items_list:
-            if item['id'] in existing_items_dict:
-                if existing_items_dict[item['id']]['status'] == 'failed' and item['status'] == 'downloaded':
-                    existing_items_dict[item['id']] = item
-            else:
-                existing_items_dict[item['id']] = item
+        # Convert existing items to a dictionary for easy lookup
+        existing_items_dict = {item['id']: item for item in self.all_media_items}
 
-        updated_items_list = list(existing_items_dict.values())
+        # Convert the start and end dates to UTC
+        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
+        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc())
 
-        if os.access(self.downloaded_items_path, os.W_OK):
-            with open(self.downloaded_items_path, 'w') as f:
-                json.dump(updated_items_list, f, indent=4)
-                    
-            logging.info("Successfully saved lists to file.")
-        else:
-            logging.error(f"No write access to the file: {self.downloaded_items_path}")
+        # Filter out any items that are outside the date range
+        self.all_media_items = {id: item for id, item in self.all_media_items.items() if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime}
 
-      
-    def identify_missing_files(self):
-        try:
-            with open(self.downloaded_items_path, 'r') as f:
-                downloaded_items = json.load(f)
-        except Exception as e:
-            logging.error(f"Error reading downloaded items JSON: {e}")
-            return []
+        date_filter = {
+            "dateFilter": {
+                "ranges": [
+                    {
+                        "startDate": {
+                            "year": start_datetime.year,
+                            "month": start_datetime.month,
+                            "day": start_datetime.day
+                        },
+                        "endDate": {
+                            "year": end_datetime.year,
+                            "month": end_datetime.month,
+                            "day": end_datetime.day
+                        }
+                    }
+                ]
+            }
+        }
 
-        if not downloaded_items:
-            logging.info("No downloaded items found.")  
-            return []
+        page_token = None
 
-        downloaded_item_ids = set(item['id'] for item in downloaded_items)
+        while True:
+            results = self.photos_api.mediaItems().search(
+                body={
+                    'pageToken': page_token,
+                    'filters': date_filter  
+                } 
+            ).execute()
 
-        current_items = []
-
-        # Pagination logic to retrieve all items
-        request = self.photos_api.mediaItems().list()
-        while request is not None:
-            response = request.execute()
-            current_items.extend(response.get('mediaItems', []))
-            request = self.photos_api.mediaItems().list_next(request, response)
-
-        missing_items = [item for item in current_items 
-                        if item['id'] not in downloaded_item_ids]
-
-        if not missing_items:
-            logging.info("No missing items found.")
-
-        return missing_items
-        
-    def download_image(self, item):
-        downloaded_item_ids = [item['id'] for item in self.downloaded_items]
-        skipped_item_ids = [item['id'] for item in self.skipped_items]
-        if item['id'] in downloaded_item_ids or item['id'] in skipped_item_ids:
-            logging.info(f"Item {item['filename']} already downloaded or skipped and logged to JSON, skipping")
-            return
-
-        if item['filename'] in self.files_dict:
-            for existing_id, existing_metadata in self.files_dict[item['filename']]:
-                if existing_id != item['id']:
-                    if existing_metadata == item['mediaMetadata']:
-                        logging.info(f"Duplicate file found with different ID but same metadata: {item['filename']}")
-                    else:
-                        logging.info(f"Duplicate file found with different ID and different metadata: {item['filename']}")
-                    # Add more code here to handle the situation as you see fit.
-            if item['id'] not in skipped_item_ids:
-                self.skipped_count += 1
-                self.skipped_items.append(item)
-            return
-
-
-        session = requests.Session()
-
-        time.sleep(item['index'] * 1)
-
-        for _ in range(3):
-            try:
-                request = self.photos_api.mediaItems().get(mediaItemId=item['id'])
-                image = request.execute()
-                image_url = image['baseUrl'] + '=d'
-                response = session.get(image_url)
-
-                filename = item['filename']
-                creation_time_str = item['mediaMetadata']['creationTime']
-
-                creation_time = parse(creation_time_str)
-
-                folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
-                os.makedirs(folder, exist_ok=True)
-
-                file_path = os.path.join(folder, filename)
-
-                if os.path.exists(file_path):
-                    logging.info(f"File {file_path} already exists in path, skipping")
-                    self.skipped_count += 1
-                    if item['id'] not in skipped_item_ids:
-                        self.skipped_items.append(item)
-                    break  # break the loop when file already exists
-                else:    
-                    with open(file_path, "wb") as f:
-                        f.write(response.content)
-
-                    file_size_bytes = os.path.getsize(file_path)
-                    file_size_kb = file_size_bytes / 1024
-                    file_size_mb = file_size_kb / 1024
-                    self.total_file_size += file_size_mb
-
-                    logging.info(f"Finished downloading {file_path}, size: {file_size_mb:.2f} MB")
-                    self.downloaded_count += 1
-                    self.downloaded_items.append(item)
-
-                    break
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Network error downloading {item['filename']}: {e}")
-                self.failed_count += 1
-                self.failed_items.append(item)
-                time.sleep(1)
-            except ssl.SSLError as e:
-                logging.error(f"SSL error downloading {item['filename']}: {e}")
-                self.failed_count += 1
-                self.failed_items.append(item)
-                time.sleep(1)
-            except Exception as e:
-                logging.error(f"Unhandled exception in download_image: {e}")
-                self.failed_count += 1
-                self.failed_items.append(item)
+            items = results.get('mediaItems')
+            if not items:
+                logging.info("No more results")
                 break
 
-        total_processed = self.downloaded_count + self.skipped_count + self.failed_count
-        if total_processed > 0 and total_processed % self.checkpoint_interval == 0:
-            logging.info(f"{total_processed} items processed, performing checkpoint...")
-            self.save_lists_to_file()
-            self.cleanup()
+            for item in items:
+                if item['id'] not in self.all_media_items:
+                    item['status'] = 'not downloaded'
+                    self.all_media_items[item['id']] = item
+                    print(f"Added item with ID {item['id']} to all_media_items")
 
-    def cleanup(self):
-        try:
-            logging.info("Starting cleanup...")
-            
-            if os.access(self.downloaded_items_path, os.R_OK):
-                with open(self.downloaded_items_path, 'r') as f:
-                    items = json.load(f)
 
-                items_dict = {item['id']: item for item in items}
-                deduplicated_items_list = list(items_dict.values())
-
-                with open(self.downloaded_items_path, 'w') as f:
-                    json.dump(deduplicated_items_list, f, indent=4)
-
-                logging.info("Finished cleanup.")
-            else:
-                logging.error(f"No read access to the file: {self.downloaded_items_path}")
-
-        except Exception as e:
-            logging.error(f"Error in cleanup: {e}")
-            logging.debug(f"Downloaded items: {self.downloaded_items}")
-            logging.debug(f"Skipped items: {self.skipped_items}")
-            logging.debug(f"Failed items: {self.failed_items}")
-            raise
-
-    def download_photos(self):
-        try:
-            start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d")
-            end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d")
-
-            date_filter = {
-                "dateFilter": {
-                    "ranges": [
-                        {
-                            "startDate": {
-                                "year": start_datetime.year,
-                                "month": start_datetime.month,
-                                "day": start_datetime.day
-                            },
-                            "endDate": {
-                                "year": end_datetime.year,
-                                "month": end_datetime.month,
-                                "day": end_datetime.day
-                            }
-                        }
-                    ]
-                }
-            }
-
-            logging.info("Downloading media...")
-
-            page_token = None
-
-            while True:
-                results = self.photos_api.mediaItems().search(
-                    body={
-                        'pageToken': page_token,
-                        'filters': date_filter  
-                    } 
-                ).execute()
-
-                items = results.get('mediaItems')
-                if not items:
-                    logging.info("No more results")
-                    break
-
-                with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                    items_with_index = [{'index': i, **item} for i, item in enumerate(items)]
-                                    
-                    futures = []
-                    for item in items_with_index:
-                        futures.append(executor.submit(self.download_image, item))
-
-                    concurrent.futures.wait(futures)
-
-                    for future in concurrent.futures.as_completed(futures):
-                        total_processed = self.downloaded_count + self.skipped_count + self.failed_count
-                        if total_processed > 0 and total_processed % self.checkpoint_interval == 0:
-                            logging.info(f"Total processed: {total_processed}, checkpoint interval: {self.checkpoint_interval}")
-                            logging.info(f"{total_processed} items processed, performing checkpoint...")
-                            self.save_lists_to_file()
-                            self.cleanup() 
-                              
-                   
-                page_token = results.get('nextPageToken')
-                if not page_token:
-                    logging.info("No more pages")
-                    break
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                logging.info("No more pages")
+                break
 
         self.save_lists_to_file(self.all_media_items)
 
@@ -336,7 +184,6 @@ class GooglePhotosDownloader:
                     # Construct the presumed file path
                     creation_time = parse(item['mediaMetadata']['creationTime'])
                     print(f"filepath filter Creation time: {creation_time}")
-                    #the below line will be updated to reflect the new filename+last 10 digits of id format
                     presumed_filepath = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month), filename)
                     print(f"Presumed filepath: {presumed_filepath}")
 
@@ -401,6 +248,8 @@ class GooglePhotosDownloader:
             return
         filename = item['filename']
 
+        #creation_time_str = item['mediaMetadata']['creationTime']
+        #creation_time = parse(creation_time_str)
         folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
         os.makedirs(folder, exist_ok=True)
         file_path = os.path.join(folder, filename)
@@ -497,8 +346,59 @@ class GooglePhotosDownloader:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
             logging.info(f"All items processed, performing final checkpoint...")
-            self.save_lists_to_file()
-            self.cleanup()
+            
+    def report_stats(self):
+        
+        # Load the JSON file
+        with open(self.downloaded_items_path, 'r') as f:
+            items = json.load(f)
+
+        # Initialize counters
+        total_size = 0
+        total_files = 0
+        total_images = 0
+        total_videos = 0
+        recent_changes = 0
+        status_counts = {}
+
+        # Get the current date and time
+        now = datetime.now(timezone.utc)
+
+        for item in self.all_media_items.values():
+            # Update the total size
+            if item.get('status') in ['downloaded', 'verified'] and 'file_size' in item:
+                total_size += item['file_size']
+
+            # Update the total number of files
+            total_files += 1
+
+            # Update the total number of images and videos
+            if 'image' in item['mimeType']:
+                total_images += 1
+            elif 'video' in item['mimeType']:
+                total_videos += 1
+
+            # Check for recent changes
+            creation_time = datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z")
+            if (now - creation_time).days <= 7:  # Change this to the desired number of days
+                recent_changes += 1
+            
+            # Count the statuses
+            status = item.get('status')
+            if status not in status_counts:
+                status_counts[status] = 1
+            else:
+                status_counts[status] += 1
+
+        # Print the stats
+        print(f"Total size: {total_size} bytes") #of downloaded or verified files.
+        print(f"Total file records: {total_files}")
+        print(f"Total image records: {total_images}")
+        print(f"Total video records: {total_videos}")
+        print(f"Recently created media: {recent_changes}")
+        # Print the status counts
+        for status, count in status_counts.items():
+            print(f"Status field tallies '{status}': {count} items")
 
 if __name__ == "__main__":
     try:
@@ -507,9 +407,15 @@ if __name__ == "__main__":
         parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
         parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
         parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
-        parser.add_argument('--detect_missing', action='store_true', help='Detect and download missing files')
+        parser.add_argument('--refresh_index', action='store_true', help='Refresh the index by fetching a new one from the server')
+        parser.add_argument('--stats_only', action='store_true', help='Only report status of items in the index')
 
         args = parser.parse_args()
+
+        if args.stats_only:
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
+            downloader.report_stats()
+            exit()
 
         log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
         logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -520,12 +426,25 @@ if __name__ == "__main__":
         console_handler.setFormatter(formatter)
         logging.getLogger().addHandler(console_handler)
 
+        rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
+        #of the Google Photos API and the requirements of your application. For example, 
+        #if the API allows 10 requests per second and a maximum of 100 requests 
+        # per 10 seconds, you could set rate=10 and capacity=100.
+
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
-        downloader.download_photos()
-        if args.detect_missing:
-            missing_items = downloader.identify_missing_files()
-            for item in missing_items:
-                downloader.download_image(item)
+        downloader.get_all_downloaded_filepaths()  #obtains a list of all filepaths in the backup folder
+
+        if args.refresh_index:
+            downloader.get_all_media_items() #if refresh_index is selected, fetch a new index from the server and add missing items
+        #to the existing index.  Does not overwrite the index file.
+        else:
+            with open(downloader.downloaded_items_path, 'r') as f:
+                downloader.all_media_items = {item['id']: item for item in json.load(f)} #if refresh_index is not selected,
+        #load the existing index from the JSON index file
+
+        downloader.download_photos(downloader.all_media_items)
+        downloader.save_lists_to_file(downloader.all_media_items)
+        downloader.report_stats()
 
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
