@@ -13,6 +13,3 @@ converttojson.py
 compareJSONtofilesys.py
 comparison_results.csv
 checkforindexdupes.py
-renamerespoistory.py
-.gitignore
-renamejsonfilenames.py
