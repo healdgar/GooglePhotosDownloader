@@ -311,11 +311,188 @@ class GooglePhotosDownloader:
                     logging.info("No more pages")
                     break
 
-                time.sleep(1)
+        self.save_lists_to_file(self.all_media_items)
 
-            logging.info(f"Downloaded {self.downloaded_count} images, skipped {self.skipped_count} images, failed to download {self.failed_count} images.")
-            logging.info(f"Total file size downloaded: {self.total_file_size:.2f} MB")
-            self.save_lists_to_file()
+    def get_all_downloaded_filepaths(self):
+        # Generate a list of all filepaths in the backup folder
+        all_downloaded_filepaths = []
+        for root_subdir in os.listdir(self.backup_path):
+            root_subdir_path = os.path.join(self.backup_path, root_subdir)
+            if os.path.isdir(root_subdir_path):  # ensure that root_subdir is a directory
+                for dirpath, dirnames, filenames in os.walk(root_subdir_path):
+                    for filename in filenames:
+                        filepath = os.path.join(dirpath, filename)
+                        all_downloaded_filepaths.append(filepath)
+
+        # For each downloaded file, add file_path and file_size to the JSON record if they are missing
+        for filepath in all_downloaded_filepaths:
+            filename = os.path.basename(filepath)
+            for item in self.all_media_items.values():
+                try:
+                    item_filename = item['filename']
+                except TypeError:
+                    print(f"TypeError for item: {item}")
+                if item_filename == filename:
+                    # Construct the presumed file path
+                    creation_time = parse(item['mediaMetadata']['creationTime'])
+                    print(f"filepath filter Creation time: {creation_time}")
+                    #the below line will be updated to reflect the new filename+last 10 digits of id format
+                    presumed_filepath = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month), filename)
+                    print(f"Presumed filepath: {presumed_filepath}")
+
+                    # Normalize and compare the presumed and actual file paths
+                    if os.path.normpath(presumed_filepath) == os.path.normpath(filepath):
+                        item['file_path'] = filepath  # Update file_path in item
+                        item['file_size'] = os.path.getsize(filepath)  # Update file_size in item
+                        item['status'] = 'verified'  # Set status to 'verified'
+                    else:
+                        item['status'] = 'missing'  # Set status to 'missing'              
+
+        return all_downloaded_filepaths
+
+
+    def save_lists_to_file(self, all_items):
+        logging.info("Starting to save lists to file...")
+
+        if os.access(self.downloaded_items_path, os.W_OK):
+            # Load existing items
+            if os.path.exists(self.downloaded_items_path):
+                with open(self.downloaded_items_path, 'r') as f:
+                    existing_items_dict = {item['id']: item for item in json.load(f)}
+            else:
+                existing_items_dict = {}
+
+            # Update existing items and append new ones
+            for item in all_items.values():
+                if item['id'] in existing_items_dict:
+                    existing_items_dict[item['id']].update(item)  # Update existing item
+                else:
+                    existing_items_dict[item['id']] = item  # Append new item
+
+            # Write the updated items back to the file
+            with open(self.downloaded_items_path, 'w') as f:
+                json.dump(list(existing_items_dict.values()), f, indent=4)
+
+            logging.info("Successfully saved lists to file.")
+        else:
+            logging.error(f"No write access to the file: {self.downloaded_items_path}")
+
+
+    def download_image(self, item):
+        logging.info(f"considering {item['filename']}...")
+        logging.info(f"MimeType: {item['mimeType']}")
+
+        # Parse the creation time
+        creation_time = parse(item['mediaMetadata']['creationTime']).astimezone(tzlocal())
+        logging.info(f"Creation time: {creation_time}")
+
+        # Convert the start and end dates to UTC
+        start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
+        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
+        logging.info(f"Start datetime: {start_datetime}")
+        logging.info(f"End datetime: {end_datetime}")
+
+        # Convert the creation time to UTC
+        creation_time_utc = creation_time.astimezone(tzutc())
+
+        # Skip the download if the item was already downloaded or if it's verified or if its outside the date range
+        if item['status'] == 'downloaded' or item['status'] == 'verified' or creation_time_utc < start_datetime or creation_time_utc > end_datetime:
+        #the date range is inclusive of the start and end dates, so if the creation time is equal to the start or end date, it should be downloaded.    
+            return
+        filename = item['filename']
+
+        folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
+        os.makedirs(folder, exist_ok=True)
+        file_path = os.path.join(folder, filename)
+
+        # Check if the file exists in the current folder
+        if os.path.exists(file_path):
+            item['status'] = 'verified'
+            logging.info(f"File {file_path} already exists in path, verified")
+            # Add the item to the all_media_items list if it's not already there
+            if item not in self.all_media_items:
+                self.all_media_items.append(item)
+                logging.info(f"Added {file_path} to all_media_items")
+  
+        else:  
+
+            session = requests.Session()
+            for attempt in range(3):  # Retry up to 3 times
+                while not rate_limiter.consume(): #calls new class TokenBucket
+                    time.sleep(0.1)  # Wait for a short time if no tokens are available
+
+                try:
+                    
+                    logging.info(f"About to make request to Google Photos API for item {item['id']}...")
+                    image = self.photos_api.mediaItems().get(mediaItemId=item['id']).execute()
+                    logging.info(f"Response from Google Photos API: {image}")
+                    logging.info("Request to Google Photos API completed.")
+
+                    is_video = 'video' in item['mimeType']
+                    logging.info(f"Is the item a video? {is_video}")
+
+                    if 'video' in item['mimeType']:  # Check if 'video' is in mimeType
+                        image_url = image['baseUrl'] + '=dv'
+                        logging.info(f"Video URL: {image_url}")
+                    else:
+                        image_url = image['baseUrl'] + '=d'
+                        logging.info(f"Image URL: {image_url}")
+
+                    logging.info(f"Attempting to download {image_url}...")  # Log a message before the download attempt
+                    response = session.get(image_url, stream=True)
+                    logging.info(f"Download attempt finished. Status code: {response.status_code}")  # Log a message after the download attempt
+
+                    # Log the status code and headers
+                    logging.info(f"Response status code: {response.status_code}")
+                    logging.info(f"Response headers: {response.headers}")
+
+            
+                
+                    with open(file_path, "wb") as f:
+                        f.write(response.content)
+
+                    item['file_path'] = file_path  # record the file path
+                    item['file_size'] = os.path.getsize(file_path)  # record the file size
+                    item['status'] = 'downloaded'  # record the status
+                    print(f"Downloaded {file_path}")
+
+                    break
+                  
+                except TimeoutError: #test
+                    logging.error(f"Request to Google Photos API for item {item['id']} timed out.") #test
+                    item['status'] = 'failed' #test
+                    continue #test
+                except ssl.SSLError as e:
+                    item['status'] = 'failed'
+                    logging.error(f"SSLError occurred while trying to get {image_url}: {e}")
+                    logging.error(f"Traceback: {traceback.format_exc()}")
+                    time.sleep(1)
+                except requests.exceptions.RequestException as e:
+                    item['status'] = 'failed'
+                    logging.error(f"RequestException occurred while trying to get {image_url}: {e}")
+                    logging.error(f"Traceback: {traceback.format_exc()}")
+                    time.sleep(1)
+                except Exception as e:
+                    item['status'] = 'failed'
+                    logging.error(f"An error occurred while trying to get {item['id']}: {e}")
+                    if attempt < 2:  # If this was not the last attempt
+                        logging.info(f"Retrying download of {item['id']}...")
+                    else:  # If this was the last attempt
+                        logging.error(f"Failed to download {item['id']} after 3 attempts.")
+
+                
+
+    def download_photos(self, all_media_items):
+        print(f"Number of items in all_media_items: {len(self.all_media_items)}")
+        print(f"Statuses of items in all_media_items: {[item['status'] for item in self.all_media_items.values()]}")
+
+        try:
+            logging.info("Downloading media...")
+
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                executor.map(self.download_image, self.all_media_items.values())
+
+
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
