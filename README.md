@@ -33,6 +33,8 @@ python google_photos_downloader.py --start_date START_DATE --end_date END_DATE -
 - `END_DATE`: End date in the format YYYY-MM-DD
 - `BACKUP_PATH`: Path to the folder where you want to save the backup
 - `NUM_WORKERS`: Number of worker threads for downloading images (default is 5)
+- 'REFRESH_INDEX': adds missing entries to the index to permit future downloads
+- 'STATS_ONLY': reads the index and reports some basic stats on counts and filesize
 
 ## Logging
 
@@ -46,9 +48,9 @@ The script logs the download process and saves the logs to a file named `google_
 - Cleanup process
 - Final download statistics (number of images downloaded, skipped, and failed to download; total file size downloaded)
 
-## CSV File
+## JSON FILE
 
-The script also generates a CSV file named `DownloadItems.csv` in the backup directory. This file contains the following columns:
+The script also generates a JSON index named `DownloadItems.json` in the backup directory. This file typicall contains the following keys (which vary depending upon the media item):
 
 - `index`: The index of the item
 - `id`: The ID of the item
@@ -58,15 +60,18 @@ The script also generates a CSV file named `DownloadItems.csv` in the backup dir
 - `mediaMetadata`: The metadata of the item
 - `filename`: The filename of the item
 - `status`: The status of the item (downloaded, skipped, or failed)
+- 'filepath': the filepath to the downloaded copy
 
 ## Error Handling
 
-The script retries up to 3 times if a network or SSL error occurs during the download. If an error occurs that is not a network or SSL error, the script does not retry and logs the error. The script also performs a cleanup at the end to retry downloading any items that failed to download.
+The script retries up to 3 times if a network or SSL error occurs during the download. If an error occurs that is not a network or SSL error, the script does not retry and logs the error. 
 
 ## Known Issues
 
-- Selecting a high number of threads can have unpredictable SSL exceptions, particularlly true if there are a high number of "skips", so when retrying a date range, lower the number of threads to avoid overloading the Google API.
-- Sometimes the script quits without an exception or logged response
+- the program will not download duplicate filenames that woudl be saved to a duplciate filepath (year/month) at this time as it does not rename files and this results in a filesystem rejection.
+- current debugging API issue where GOogle Photos API server unexpectedly does not respond and causes a script exit.  Fortunately the script can be run again to capture missing files and may complete on the second attempt.
+- still working on dealing with the periodically changing baseUrls.
+- duplicate ids crop up in the index periodically.  debugging. probably related to the baseUrls changing.
 
 ## Note
 
