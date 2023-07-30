@@ -70,6 +70,8 @@ The script retries up to 3 times if a network or SSL error occurs during the dow
 
 - the program will not download duplicate filenames that woudl be saved to a duplciate filepath (year/month) at this time as it does not rename files and this results in a filesystem rejection.
 - current debugging API issue where GOogle Photos API server unexpectedly does not respond and causes a script exit.  Fortunately the script can be run again to capture missing files and may complete on the second attempt.
+- still working on dealing with the periodically changing baseUrls.
+- duplicate ids crop up in the index periodically.  debugging. probably related to the baseUrls changing.
 
 ## Note
 
