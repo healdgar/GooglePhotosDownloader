@@ -99,19 +99,19 @@ class GooglePhotosDownloader:
         self.all_media_items_path = os.path.join(self.backup_path, 'DownloadItems.json')
         if os.path.exists(self.all_media_items_path):
             with open(self.all_media_items_path, 'r') as f:
-                self.all_media_items = json.load(f)
+                self.all_media_items = {item['id']: item for item in json.load(f)}
         else:
             self.all_media_items = {}
 
-        # Convert existing items to a dictionary for easy lookup
-        existing_items_dict = {item['id']: item for item in self.all_media_items}
+        # Load existing items into a dictionary for faster lookup
+        existing_items_dict = self.all_media_items
 
         # Convert the start and end dates to UTC
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc())
 
         # Filter out any items that are outside the date range
-        self.all_media_items = {id: item for id, item in self.all_media_items.items() if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime}
+        self.all_media_items = {id: item for id, item in existing_items_dict.items() if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime}
 
         date_filter = {
             "dateFilter": {
@@ -346,13 +346,8 @@ class GooglePhotosDownloader:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
             logging.info(f"All items processed, performing final checkpoint...")
-            
-    def report_stats(self):
-        
-        # Load the JSON file
-        with open(self.downloaded_items_path, 'r') as f:
-            items = json.load(f)
 
+    def report_stats(self):
         # Initialize counters
         total_size = 0
         total_files = 0
@@ -448,3 +443,7 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
+        traceback.print_exc()  # This will print the traceback
+
+    #sample usage: 
+    # python google_photos_downloader.py --start_date 2000-01-01 --end_date 20001-12-31 --backup_path C:\photos --num_workers 5 --refresh_index
