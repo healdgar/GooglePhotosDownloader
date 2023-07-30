@@ -184,7 +184,6 @@ class GooglePhotosDownloader:
                     # Construct the presumed file path
                     creation_time = parse(item['mediaMetadata']['creationTime'])
                     print(f"filepath filter Creation time: {creation_time}")
-                    #the below line will be updated to reflect the new filename+last 10 digits of id format
                     presumed_filepath = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month), filename)
                     print(f"Presumed filepath: {presumed_filepath}")
 
@@ -249,6 +248,8 @@ class GooglePhotosDownloader:
             return
         filename = item['filename']
 
+        #creation_time_str = item['mediaMetadata']['creationTime']
+        #creation_time = parse(creation_time_str)
         folder = os.path.join(self.backup_path, str(creation_time.year), str(creation_time.month))
         os.makedirs(folder, exist_ok=True)
         file_path = os.path.join(folder, filename)
