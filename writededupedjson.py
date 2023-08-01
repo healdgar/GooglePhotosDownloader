@@ -13,10 +13,10 @@ def remove_duplicates(json_file):
             new_data.append(item)
 
     # Write the new data to a new JSON file
-    with open('new_file.json', 'w') as f:
+    with open('DownloadItems.json', 'w') as f:
         json.dump(new_data, f, indent=4)
 
-    print(f"Removed duplicates. The new JSON file has been saved as 'new_file.json'.")
+    print(f"Removed duplicates. The JSON file has been updated.")
 
 # Replace 'your_file.json' with the path to your JSON file
 remove_duplicates('c:\photos\DownloadItems.json')
