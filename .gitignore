@@ -25,3 +25,8 @@ renamejsonfilenames.py
 renamerespoistory.py
 renamejsonfilenames.py
 renamerespoistory.py
+writededupedjson.py
+pathverifyer.py
+deletenonverified.py
+convertlistofdictstodicts.py
+
