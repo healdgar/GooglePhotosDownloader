@@ -57,7 +57,8 @@ class TokenBucket: #this class is used to limit the rate of requests to the Goog
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
 
-    def __init__(self, start_date, end_date, backup_path, num_workers=5, checkpoint_interval=25):
+    def __init__(self, start_date, end_date, backup_path, num_workers=5, checkpoint_interval=25, auth_code=None):
+
         self.start_date = start_date
         self.end_date = end_date
         self.backup_path = backup_path
@@ -68,6 +69,8 @@ class GooglePhotosDownloader:
         self.total_file_size = 0
         self.failed_items = []
         self.skipped_items = []
+        self.auth_code = auth_code  # New argument to store the authentication code
+
         
         self.downloaded_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
         if os.path.exists(self.downloaded_items_path):
@@ -101,7 +104,16 @@ class GooglePhotosDownloader:
 
         self.checkpoint_interval = checkpoint_interval #unused, for later implementation of a periodic save to file in case of interrupted downloads.
         self.all_media_items = {}  # Initialize all_media_items as an empty dictionary
-        
+
+    def authenticate(self):
+        """Perform the OAuth authentication using the provided auth_code."""
+        flow = InstalledAppFlow.from_client_secrets_file('client_secrets.json', self.SCOPES)
+        creds = flow.run_local_server(port=0, authorization_prompt_message='', authorization_code=self.auth_code)
+        with open('token.pickle', 'wb') as token_file:
+            pickle.dump(creds, token_file)
+
+        self.photos_api = build('photoslibrary', 'v1', static_discovery=False, credentials=creds)
+        logging.info("Connected to Google server.")   
 
 
     def get_all_media_items(self, filepaths_and_filenames):
@@ -237,7 +249,6 @@ class GooglePhotosDownloader:
                 item['file_path'] = convention_filepath
                 item['file_size'] = os.path.getsize(convention_filepath)
                 item['status'] = 'verified'
-                print(f"File {item['file_path']} verified")
 
                 current_filename = filepaths_and_filenames[convention_filepath]
                 if item['filename'] != current_filename:
@@ -275,15 +286,15 @@ class GooglePhotosDownloader:
         end_datetime_local = convert_utc_to_local(datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1))
         
         # Compare creation_time_local with start_datetime_local and end_datetime_local
-        is_status_downloaded = item['status'] == 'downloaded'
-        is_status_verified = item['status'] == 'verified'
+        is_status_downloaded = item.get('status', '') == 'downloaded'
+        is_status_verified = item.get('status', '') == 'verified'
         is_before_start_date = creation_time_local < start_datetime_local
         is_after_end_date = creation_time_local > end_datetime_local
 
-        if is_status_downloaded or is_status_verified or is_before_start_date or is_after_end_date or item['status'] == 'failed':
-            return
+        #if is_status_downloaded or is_status_verified or is_before_start_date or is_after_end_date or item['status'] == 'failed':
+        #    return
 
-        file_path = item['file_path']
+        file_path = item.get('file_path')
         logging.info(f"File path: {file_path}")
         # Get the correct creation year from the 'creationTime' metadata
         creation_time_year = convert_utc_to_local(parse(item['mediaMetadata']['creationTime'])).year
@@ -296,7 +307,7 @@ class GooglePhotosDownloader:
         convention_filename = self.append_id_to_string(item['filename'], item['id'])
         
         # if the file exists at either the original or the convention path, check if the filename matches the convention.
-        if os.path.exists(file_path):
+        if file_path is not None and os.path.exists(file_path):
             # if the filename doesn't match the convention, rename the file, update the path, and mark it verified, and do not download it.
             if item['filename'] != convention_filename:
                 logging.info(f"Filename {item['filename']} does not match the convention. Renaming...")                
@@ -320,8 +331,8 @@ class GooglePhotosDownloader:
                 return 
 
         # If the file cannot be found at either file_path, download it.
-        logging.info(f" {file_path} and {convention_file_path} for current item...")
-        if not os.path.exists(file_path) and not os.path.exists(convention_file_path):   
+        
+        else:   
             logging.info(f"Neither {file_path} nor {convention_file_path} exists. Starting download...")
             session = requests.Session() #creates a new session for each download attempt.  This is to prevent the session from timing out and causing the download to fail.
             for attempt in range(3):  # Retry up to 3 times
@@ -347,7 +358,7 @@ class GooglePhotosDownloader:
                     # Log the status code and headers
                     logging.info(f"Response status code: {response.status_code}")
                     logging.info(f"Response headers: {response.headers}")
-        
+                    os.makedirs(os.path.dirname(convention_file_path), exist_ok=True)
                     with open(convention_file_path, "wb") as f: 
                         f.write(response.content) #write the file to the backup folder
 
@@ -485,8 +496,13 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         parser.add_argument('--refresh_index', action='store_true', help='Refresh the index by fetching a new one from the server')
         parser.add_argument('--stats_only', action='store_true', help='Only report status of items in the index')
         parser.add_argument('--download_missing', action='store_true', help='Download all missing items')
+        parser.add_argument('--auth', action='store_true', help='Perform OAuth re-authentication and refresh token')
 
         args = parser.parse_args()
+        if args.auth:
+            # If --auth argument is provided, perform OAuth authentication
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
+            downloader.authenticate()
 
         if args.stats_only:
             downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
