@@ -125,7 +125,7 @@ class GooglePhotosDownloader:
                 with open(self.all_media_items_path, 'r') as f:
                     self.all_media_items = json.load(f)
             except json.JSONDecodeError:
-                print("There was an error decoding the JSON file. Please check the file format.")
+                logging.info("There was an error decoding the JSON file. Please check the file format.")
             logging.info(f"Loaded {len(self.all_media_items)} existing media items")
 
         else:
@@ -232,7 +232,7 @@ class GooglePhotosDownloader:
                         filepath = os.path.normpath(os.path.join(dirpath, filename))
                         filepaths_and_filenames[filepath] = filename
 
-        print(f"Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
+        logging.info(f"Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
         for item in self.all_media_items.values():
             # Parse the creation time and convert to local time zone
             creation_time = parse(item['mediaMetadata']['creationTime']).astimezone(pytz.utc).replace(tzinfo=None)
@@ -244,7 +244,7 @@ class GooglePhotosDownloader:
             # Combine everything to get the full file path
             convention_filepath = os.path.normpath(os.path.join(self.backup_path, subdirectory, filename_with_id))
 
-            print(f"convention_filepath: {convention_filepath}")
+            logging.info(f"convention_filepath: {convention_filepath}")
             if convention_filepath in filepaths_and_filenames:
                 item['file_path'] = convention_filepath
                 item['file_size'] = os.path.getsize(convention_filepath)
@@ -268,7 +268,7 @@ class GooglePhotosDownloader:
                         logging.error(f"File already exists at {new_filepath}. Cannot rename {convention_filepath}.")                              
             else:
                 item['status'] = 'missing'
-                print(f"File {item['filename']} is missing")
+                logging.info(f"File {item['filename']} is missing")
 
         verified_count = len([item for item in self.all_media_items.values() if item['status'] == 'verified'])
         missing_count = len([item for item in self.all_media_items.values() if item['status'] == 'missing'])
@@ -281,7 +281,7 @@ class GooglePhotosDownloader:
 
         # Parse the creation time and convert to local time zone
         creation_time_local = convert_utc_to_local(parse(item['mediaMetadata']['creationTime']))
-        # Convert the start and end dates to local time zone
+        # Convert the download filter start and end dates to local time zone
         start_datetime_local = convert_utc_to_local(datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc()))
         end_datetime_local = convert_utc_to_local(datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1))
         
@@ -365,7 +365,7 @@ class GooglePhotosDownloader:
                     item['file_path'] = convention_file_path  # record the file path
                     item['file_size'] = os.path.getsize(convention_file_path)  # record the file size
                     item['status'] = 'downloaded'  # record the status
-                    print(f"Downloaded {convention_file_path}")
+                    logging.info(f"Downloaded {convention_file_path}")
                     break #if download is successful, break out of the retry loop and download the next item.
                 
                 except TimeoutError: #if the request times out, log an error and move on to the next item.
@@ -391,8 +391,8 @@ class GooglePhotosDownloader:
                         logging.error(f"Failed to download {item['id']} after 3 attempts.")
 
     def download_photos(self, all_media_items): #this function downloads all photos and videos in the all_media_items list.
-        print(f"Number of items in all_media_items: {len(self.all_media_items)}")
-        print(f"Statuses of items in all_media_items: {[item['status'] for item in self.all_media_items.values()]}")
+        logging.info(f"Number of items in all_media_items: {len(self.all_media_items)}")
+        logging.info(f"Statuses of items in all_media_items: {[item['status'] for item in self.all_media_items.values()]}")
 
         try:
             logging.info("Downloading media...")
@@ -416,7 +416,7 @@ class GooglePhotosDownloader:
         # Get the current date and time
         now = datetime.now(timezone.utc)
 
-        # Convert the start and end dates to UTC
+        # Convert the reporting stats filter start and end dates to UTC
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
 
@@ -450,14 +450,14 @@ class GooglePhotosDownloader:
                 status_counts[status] += 1
 
         # Print the stats
-        print(f"Total size: {total_size} bytes") #of downloaded or verified files.
-        print(f"Total file records: {total_files}")
-        print(f"Total image records: {total_images}")
-        print(f"Total video records: {total_videos}")
-        print(f"Recently created media: {recent_changes}")
+        logging.info(f"Total size: {total_size} bytes") #of downloaded or verified files.
+        logging.info(f"Total file records: {total_files}")
+        logging.info(f"Total image records: {total_images}")
+        logging.info(f"Total video records: {total_videos}")
+        logging.info(f"Recently created media: {recent_changes}")
          # Print the status counts
         for status, count in status_counts.items():
-            print(f"Status field tallies '{status}': {count} items")
+            logging.info(f"Status field tallies '{status}': {count} items")
 
     def save_lists_to_file(self, all_items):
         logging.info("Starting to save lists to file...")
