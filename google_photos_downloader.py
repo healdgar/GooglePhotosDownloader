@@ -125,7 +125,7 @@ class GooglePhotosDownloader:
                 with open(self.all_media_items_path, 'r') as f:
                     self.all_media_items = json.load(f)
             except json.JSONDecodeError:
-                logging.info("There was an error decoding the JSON file. Please check the file format.")
+                logging.info("FETCHER: There was an error decoding the JSON file. Please check the file format.")
             logging.info(f"Loaded {len(self.all_media_items)} existing media items")
 
         else:
@@ -140,7 +140,7 @@ class GooglePhotosDownloader:
             id: item 
             for id, item in self.all_media_items.items() 
             if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime} 
-        logging.info(f"{len(self.all_media_items)} items are within the date range")
+        logging.info(f"FETCHER: {len(self.all_media_items)} items are within the date range")
 
         date_filter = {
             "dateFilter": {
@@ -175,7 +175,7 @@ class GooglePhotosDownloader:
 
             items = results.get('mediaItems')
             if not items:
-                logging.info("No more results")
+                logging.info("FETCHER: No more results")
                 break
 
             # Get all the filenames from the scan results
@@ -194,7 +194,7 @@ class GooglePhotosDownloader:
 
             page_token = results.get('nextPageToken')
             if not page_token:
-                logging.info("No more pages")
+                logging.info("FETCHER: No more pages")
                 break
 
             page_counter += 1  # Increment the page counter
@@ -313,7 +313,7 @@ class GooglePhotosDownloader:
         with open(self.all_media_items_path, 'r') as f:
             self.all_media_items = json.load(f)
 
-        logging.info(f"Number of items loaded to all_media_items for validate index: {len(self.all_media_items)}")
+        logging.info(f"VALIDATOR: Number of items loaded to all_media_items for validate index: {len(self.all_media_items)}")
 
         missing_count = 0
         validated_count = 0
@@ -393,7 +393,7 @@ class GooglePhotosDownloader:
             
 
     def download_image(self, item):
-        logging.info(f"considering downloading {item['filename']}...")
+        logging.info(f"DOWNLOADER: considering {item['filename']}...")
 
         # Parse the creation time and convert to local time zone
         creation_time_local = convert_utc_to_local(parse(item['mediaMetadata']['creationTime']))
@@ -407,7 +407,7 @@ class GooglePhotosDownloader:
         is_before_start_date = creation_time_local < start_datetime_local
         is_after_end_date = creation_time_local > end_datetime_local
 
-        #if is_status_downloaded or is_status_verified or is_before_start_date or is_after_end_date or item['status'] == 'failed':
+        if is_status_downloaded or is_status_verified or is_before_start_date or is_after_end_date or item['status'] == 'failed':
         #    return
 
         file_path = item.get('file_path')
@@ -518,7 +518,7 @@ class GooglePhotosDownloader:
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
-            logging.info(f"All items processed, performing final checkpoint...")
+            logging.info(f"DOWNLOADER: All items processed, performing final checkpoint...")
 
     def report_stats(self): #this function reports the status of all items in the index.
         # Initialize counters
@@ -597,9 +597,9 @@ class GooglePhotosDownloader:
             with open(self.downloaded_items_path, 'w') as f:
                 json.dump(existing_items_dict, f, indent=4)
 
-            logging.info("Successfully saved lists to file.")
+            logging.info("INDEX UPDATER: Successfully saved lists to file.")
         else:
-            logging.error(f"No write access to the file: {self.downloaded_items_path}")  
+            logging.error(f"INDEX UPDATER: No write access to the file: {self.downloaded_items_path}")  
 
 
 if __name__ == "__main__": #this is the main function that runs when the script is executed.
