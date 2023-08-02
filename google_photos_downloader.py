@@ -364,7 +364,8 @@ class GooglePhotosDownloader:
         with open('extraneous_files.txt', 'w') as f:
             for file in extraneous_files:
                 f.write("%s\n" % file)
-
+        if len(extraneous_files) == 0:
+            return
         #ask user whether to delete, relocate or leave files alone
         user_input = input("Would you like to delete, relocate or leave alone the extraneous files? (d/r/l): ")
         if user_input == 'd':
@@ -372,14 +373,19 @@ class GooglePhotosDownloader:
                 os.remove(file)
             logging.info("Extraneous files deleted")
         elif user_input == 'r':
-            # ask user for new filepath
+            # ask user for new directory
             new_directory = input("Enter the new directory: ")
             for file in extraneous_files:
-                os.makedirs(new_directory, exist_ok=True)
-                basename = os.path.basename(file)
-                new_filepath = os.path.join(new_directory, basename)
+                # Get the relative path of the file
+                rel_path = os.path.relpath(file, self.backup_path)
+                # Create the new path for the file
+                new_filepath = os.path.join(new_directory, rel_path)
+                # Create any necessary directories
+                os.makedirs(os.path.dirname(new_filepath), exist_ok=True)
+                # Move the file
                 os.rename(file, new_filepath)
             logging.info(f"Extraneous files moved to {new_directory}")
+
         elif user_input == 'l':
             logging.info("Leaving files alone")
         else:
