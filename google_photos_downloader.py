@@ -222,8 +222,8 @@ class GooglePhotosDownloader:
         appended_string = f"{base}_{item_id[-14:]}{ext}"
         return appended_string
 
-    def get_filepaths_and_filenames(self):
-        """Get a dictionary of all filenames and filepaths in the backup folder."""
+    def get_filepaths_and_filenames(self): #scans drive for filenames and filepaths and returns a dictionary of all filenames and filepaths in the backup folder.
+        # updates status and orgnizes files in the backup folder.
         filepaths_and_filenames = {}
         for root_subdir in os.listdir(self.backup_path):
             root_subdir_path = os.path.normpath(os.path.join(self.backup_path, root_subdir))
@@ -255,7 +255,7 @@ class GooglePhotosDownloader:
                 item['file_size'] = os.path.getsize(convention_filepath)
                 item['status'] = 'verified' #mark the item as verified if the file exists.
                 logging.info(f"SCANNER: File {convention_filepath} verified")
-                
+
             if item['filename'] in filepaths_and_filenames.values():
                 
                 current_filepaths = [path for path, name in filepaths_and_filenames.items() if name == convention_filename] #get a list of all filepaths with the same filename.
@@ -307,6 +307,84 @@ class GooglePhotosDownloader:
         logging.info(f"SCANNER: Verified {verified_count} files and found {missing_count} missing files.")
         return filepaths_and_filenames
 
+
+    def validate_repository(self):
+        self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
+        with open(self.all_media_items_path, 'r') as f:
+            self.all_media_items = json.load(f)
+
+        logging.info(f"Number of items loaded to all_media_items for validate index: {len(self.all_media_items)}")
+
+        missing_count = 0
+        validated_count = 0
+        validated_files = []
+        missing_files = []
+        backup_repository = self.backup_path
+
+        for id, item in self.all_media_items.items():
+            file_path_to_verify = os.path.normpath(item['file_path'])
+
+            try:
+                if file_path_to_verify is not None and os.path.exists(file_path_to_verify):
+                    validated_count += 1
+                    validated_files.append(file_path_to_verify)
+                else:
+                    missing_count += 1
+                    missing_files.append(file_path_to_verify)
+            except:
+                logging.info(f"Error verifying file {file_path_to_verify}")
+                continue
+
+        logging.info(f"VALIDATOR: Verified {validated_count} indexed file paths and found {missing_count} missing files.")
+        logging.info(f'VALIDATOR: The last validated file path was {file_path_to_verify}')
+
+        with open('validated_files.txt', 'w') as f:
+            for item in validated_files:
+                f.write("%s\n" % item)
+
+        with open('missing_files.txt', 'w') as f:
+            for item in missing_files:
+                f.write("%s\n" % item)
+        # Now let's find extraneous files
+        extraneous_files = []
+        for root, dirs, files in os.walk(self.backup_path):
+            # If the current directory is the root of the backup directory, skip it
+            if os.path.normpath(root) == os.path.normpath(self.backup_path):
+                continue
+            for file in files:
+                file_path = os.path.join(root, file)
+                normalized_file_path = os.path.normpath(file_path)
+                if normalized_file_path not in validated_files:
+                    extraneous_files.append(normalized_file_path)
+
+        # Log the number of extraneous files
+        logging.info(f"VALIDATOR: Found {len(extraneous_files)} extraneous files.")
+
+        # Save the list of extraneous files to a file
+        with open('extraneous_files.txt', 'w') as f:
+            for file in extraneous_files:
+                f.write("%s\n" % file)
+
+        #ask user whether to delete, relocate or leave files alone
+        user_input = input("Would you like to delete, relocate or leave alone the extraneous files? (d/r/l): ")
+        if user_input == 'd':
+            for file in extraneous_files:
+                os.remove(file)
+            logging.info("Extraneous files deleted")
+        elif user_input == 'r':
+            # ask user for new filepath
+            new_directory = input("Enter the new directory: ")
+            for file in extraneous_files:
+                os.makedirs(new_directory, exist_ok=True)
+                basename = os.path.basename(file)
+                new_filepath = os.path.join(new_directory, basename)
+                os.rename(file, new_filepath)
+            logging.info(f"Extraneous files moved to {new_directory}")
+        elif user_input == 'l':
+            logging.info("Leaving files alone")
+        else:
+            logging.info("Invalid input. Leaving files alone")
+            
 
     def download_image(self, item):
         logging.info(f"considering downloading {item['filename']}...")
@@ -529,8 +607,19 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         parser.add_argument('--stats_only', action='store_true', help='Only report status of items in the index')
         parser.add_argument('--download_missing', action='store_true', help='Download all missing items')
         parser.add_argument('--auth', action='store_true', help='Perform OAuth re-authentication and refresh token')
+        parser.add_argument('--validate_only', action='store_true', help='Validate the index by checking all filepaths')
 
         args = parser.parse_args()
+        log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
+        logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(console_handler)
+
+
         if args.auth:
             # If --auth argument is provided, perform OAuth authentication
             downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
@@ -539,6 +628,11 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         if args.stats_only:
             downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
             downloader.report_stats()
+            exit()
+        
+        if args.validate_only:
+            validator = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
+            validator.validate_repository()
             exit()
 
         log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
