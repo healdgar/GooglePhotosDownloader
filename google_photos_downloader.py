@@ -182,8 +182,9 @@ class GooglePhotosDownloader:
             existing_filenames = set(filepaths_and_filenames.values())
             for item in items:
                 if item['id'] not in self.all_media_items: #if the item is not already in the index, add it.
-                    filename_with_id = self.append_id_to_string(item['filename'], item['id'])
-                    if filename_with_id in existing_filenames:
+                    convention_filename = self.append_id_to_string(item['filename'], item['id'])
+                    convention_filename = convention_filename.replace('\\', '-').replace('/', '-') #avoid slashes in filenames
+                    if convention_filename in existing_filenames:
                         # If the filename already exists in the scan results, mark it as 'verified'
                         item['status'] = 'verified'
                     else:
@@ -229,6 +230,7 @@ class GooglePhotosDownloader:
             if os.path.isdir(root_subdir_path):
                 for dirpath, dirnames, filenames in os.walk(root_subdir_path):
                     for filename in filenames:
+                        filename = filename.replace('\\', '-').replace('/', '-') #some weird filenames contain slashes.  Replace them with dashes.
                         filepath = os.path.normpath(os.path.join(dirpath, filename))
                         filepaths_and_filenames[filepath] = filename
 
@@ -239,36 +241,66 @@ class GooglePhotosDownloader:
             creation_time_local = convert_utc_to_local(creation_time)
             # Define the subdirectory based on the local time zone-adjusted creation time
             subdirectory = os.path.join(str(creation_time_local.year), str(creation_time_local.month))
+            logging.info(f"SCANNER: subdirectory: {subdirectory}")
             # Define the filename with the appended ID based on the local time zone-adjusted creation time
-            filename_with_id = self.append_id_to_string(item['filename'], item['id'])
+            convention_filename = self.append_id_to_string(item['filename'], item['id'])
             # Combine everything to get the full file path
-            convention_filepath = os.path.normpath(os.path.join(self.backup_path, subdirectory, filename_with_id))
-
-            logging.info(f"convention_filepath: {convention_filepath}")
-            if convention_filepath in filepaths_and_filenames:
+            convention_filename = convention_filename.replace('\\', '-').replace('/', '-')
+            logging.info(f"SCANNER: removed slashes convention_filename: {convention_filename}")
+            convention_filepath = os.path.normpath(os.path.join(self.backup_path, subdirectory, convention_filename))
+            
+            logging.info(f"SCANNER: convention_filepath: {convention_filepath}")
+            if convention_filepath in filepaths_and_filenames: #update the filepath in the index if it exists in the dictionary.
                 item['file_path'] = convention_filepath
                 item['file_size'] = os.path.getsize(convention_filepath)
-                item['status'] = 'verified'
+                item['status'] = 'verified' #mark the item as verified if the file exists.
+                logging.info(f"SCANNER: File {convention_filepath} verified")
+                
+            if item['filename'] in filepaths_and_filenames.values():
+                
+                current_filepaths = [path for path, name in filepaths_and_filenames.items() if name == convention_filename] #get a list of all filepaths with the same filename.
+                # First loop to move files
+                for current_filepath in current_filepaths:
+                    # If the file is properly named but not in the correct location, move it
+                    if current_filepath and current_filepath != convention_filepath:
+                        # Create the directory if it doesn't exist
+                        os.makedirs(os.path.dirname(convention_filepath), exist_ok=True)
+                        # Only move the file if it does not already exist at the destination
+                        if not os.path.exists(convention_filepath):
+                            logging.info(f"SCANNER: Moving {current_filepath} to {convention_filepath}")
+                            os.rename(current_filepath, convention_filepath)
+                            # Update the filepath in the item and in the dictionary
+                            item['file_path'] = convention_filepath
+                            item['status'] = 'verified'
+                            filepaths_and_filenames[convention_filepath] = item['filename']
+                            del filepaths_and_filenames[current_filepath]
+                            
+                        else:
+                            # If a file already exists at the convention_filepath, check if it is the correct file
+                            if os.path.basename(convention_filepath) != item['filename']:
+                                # If it is not the correct file, move it to the backup directory
+                                backup_dir = os.path.join(os.path.dirname(convention_filepath), 'backup')
+                                os.makedirs(backup_dir, exist_ok=True)
+                                backup_filepath = os.path.join(backup_dir, os.path.basename(convention_filepath))
+                                if not os.path.exists(backup_filepath):  # Check if the file already exists in the backup directory
+                                    logging.info(f"SCANNER: Moving existing file at {convention_filepath} to backup directory {backup_filepath}")
+                                    os.rename(convention_filepath, backup_filepath)
+                                else:
+                                    logging.info(f"SCANNER: File already exists in the backup directory. Skipping move.")
 
-                current_filename = filepaths_and_filenames[convention_filepath]
-                if item['filename'] != current_filename:
-                    logging.info(f"Filename {item['filename']} does not match the convention. Renaming...")
-                    # Rename the file
-                    new_filename = self.append_id_to_string(item['filename'], item['id'])
-                    new_filepath = os.path.normpath(os.path.join(dirpath, new_filename))
-                    if not os.path.exists(new_filepath):
-                        os.rename(convention_filepath, new_filepath)
-                        # Update the filename in the item
-                        item['filename'] = current_filename
-                        # Update the filepath in the item and in the dictionary
-                        item['file_path'] = new_filepath
-                        filepaths_and_filenames[new_filepath] = current_filename
-                        del filepaths_and_filenames[convention_filepath]
-                    else:
-                        logging.error(f"File already exists at {new_filepath}. Cannot rename {convention_filepath}.")                              
-            else:
-                item['status'] = 'missing'
-                logging.info(f"File {item['filename']} is missing")
+
+                # Second loop to rename files
+                if convention_filepath in filepaths_and_filenames and item['filename'] != filepaths_and_filenames[convention_filepath]:
+                    logging.info(f"SCANNER: Filename {filepaths_and_filenames[convention_filepath]} does not match the convention. Renaming to {convention_filename}")
+                    os.rename(convention_filepath, os.path.join(os.path.dirname(convention_filepath), convention_filename))
+                    # Update the filename in the item and in the dictionary
+                    item['filename'] = convention_filename
+                    filepaths_and_filenames[convention_filepath] = convention_filename
+                    item['status'] = 'verified' #mark the item as verified if the file exists.
+                else:
+                    item['status'] = 'missing'
+                    logging.info(f"SCANNER: File {item['filename']} is missing")
+
 
         verified_count = len([item for item in self.all_media_items.values() if item['status'] == 'verified'])
         missing_count = len([item for item in self.all_media_items.values() if item['status'] == 'missing'])
@@ -277,7 +309,7 @@ class GooglePhotosDownloader:
 
 
     def download_image(self, item):
-        logging.info(f"considering {item['filename']}...")
+        logging.info(f"considering downloading {item['filename']}...")
 
         # Parse the creation time and convert to local time zone
         creation_time_local = convert_utc_to_local(parse(item['mediaMetadata']['creationTime']))
@@ -295,16 +327,16 @@ class GooglePhotosDownloader:
         #    return
 
         file_path = item.get('file_path')
-        logging.info(f"File path: {file_path}")
+        logging.info(f"File path from index: {file_path}")
         # Get the correct creation year from the 'creationTime' metadata
         creation_time_year = convert_utc_to_local(parse(item['mediaMetadata']['creationTime'])).year
         # Update the subdirectory to use the correct creation year
         subdirectory = os.path.join(str(creation_time_year), str(creation_time_local.month))
         # Define the filename with the appended ID based on the local time zone-adjusted creation time
-        filename_with_id = self.append_id_to_string(item['filename'], item['id'])
-        # Combine everything to get the full file path
-        convention_file_path = os.path.normpath(os.path.join(self.backup_path, subdirectory, filename_with_id))
         convention_filename = self.append_id_to_string(item['filename'], item['id'])
+        # Combine everything to get the full file path
+        convention_filename = convention_filename.replace('\\', '-').replace('/', '-') #avoid slashes in filenames
+        convention_file_path = os.path.normpath(os.path.join(self.backup_path, subdirectory, convention_filename))
         
         # if the file exists at either the original or the convention path, check if the filename matches the convention.
         if file_path is not None and os.path.exists(file_path):
@@ -525,8 +557,8 @@ if __name__ == "__main__": #this is the main function that runs when the script 
 
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers) #creates a new instance of the GooglePhotosDownloader class.
         
-
         if args.refresh_index:
+            downloader.get_all_media_items
             filepaths_and_filenames = downloader.get_filepaths_and_filenames()  # First get the scan results
             downloader.get_all_media_items(filepaths_and_filenames)  # Then refresh the index, using the scan results for comparison
         else:
