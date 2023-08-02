@@ -207,7 +207,7 @@ class GooglePhotosDownloader:
             estimated_remaining_time = average_time_per_item * (10000 - items_processed)  # Estimate remaining time based on average time per item
             logging.info(f"Processed {page_counter} pages and {items_processed} items in {elapsed_time:.2f} seconds. Estimated remaining time: {estimated_remaining_time:.2f} seconds.")
 
-        self.save_lists_to_file(self.all_media_items)
+        self.save_index_to_file(self.all_media_items)
 
     def append_id_to_string(self, string_to_append, item_id):
         """Append the last 14 characters of the ID to the filename if necessary."""
@@ -222,7 +222,7 @@ class GooglePhotosDownloader:
         appended_string = f"{base}_{item_id[-14:]}{ext}"
         return appended_string
 
-    def get_filepaths_and_filenames(self): #scans drive for filenames and filepaths and returns a dictionary of all filenames and filepaths in the backup folder.
+    def scandisk_and_get_filepaths_and_filenames(self): #scans drive for filenames and filepaths and returns a dictionary of all filenames and filepaths in the backup folder.
         # updates status and orgnizes files in the backup folder.
         filepaths_and_filenames = {}
         for root_subdir in os.listdir(self.backup_path):
@@ -575,7 +575,7 @@ class GooglePhotosDownloader:
         for status, count in status_counts.items():
             logging.info(f"Status field tallies '{status}': {count} items")
 
-    def save_lists_to_file(self, all_items):
+    def save_index_to_file(self, all_items):
         logging.info("Starting to save lists to file...")
 
         if os.access(self.downloaded_items_path, os.W_OK):
@@ -659,7 +659,7 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         
         if args.refresh_index:
             downloader.get_all_media_items
-            filepaths_and_filenames = downloader.get_filepaths_and_filenames()  # First get the scan results
+            filepaths_and_filenames = downloader.scandisk_and_get_filepaths_and_filenames()  # First get the scan results
             downloader.get_all_media_items(filepaths_and_filenames)  # Then refresh the index, using the scan results for comparison
         else:
             # Check if the file exists
@@ -673,9 +673,9 @@ if __name__ == "__main__": #this is the main function that runs when the script 
                 with open(downloader.downloaded_items_path, 'r') as f:
                     downloader.all_media_items = json.load(f)
 
-        downloader.get_filepaths_and_filenames()  #obtains a list of all filepaths in the backup folder
+        downloader.scandisk_and_get_filepaths_and_filenames()  #obtains a list of all filepaths in the backup folder
         downloader.download_photos(downloader.all_media_items) #download all photos and videos in the index.
-        downloader.save_lists_to_file(downloader.all_media_items) #save the index to the JSON index file.
+        downloader.save_index_to_file(downloader.all_media_items) #save the index to the JSON index file.
         downloader.report_stats() #report the status of all items in the index.
 
     except Exception as e:
