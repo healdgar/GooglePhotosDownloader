@@ -117,7 +117,7 @@ class GooglePhotosDownloader:
 
 
     def get_all_media_items(self, filepaths_and_filenames):
-            
+        fetcher_start_time = time.time()  # Record the starting time    
         # Load existing media items in order to avoid re-downloading them
         self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
         if os.path.exists(self.all_media_items_path):
@@ -162,7 +162,7 @@ class GooglePhotosDownloader:
         }
         page_counter = 0  # Initialize a page counter
         page_token = None
-        kindexing_start_time = time.time()  # Record the starting time
+        indexing_start_time = time.time()  # Record the starting time
 
         while True: # Loop until there are no more pages
             
@@ -199,15 +199,17 @@ class GooglePhotosDownloader:
 
             page_counter += 1  # Increment the page counter
 
-        # If 10 pages have been processed, report progress and estimate time to completion
-        if page_counter % 10 == 0:
-            elapsed_time = time.time() - kindexing_start_time  # Calculate elapsed time
-            items_processed = len(self.all_media_items)  # Calculate number of items processed so far
-            average_time_per_item = elapsed_time / items_processed  # Calculate average processing time per item
-            estimated_remaining_time = average_time_per_item * (10000 - items_processed)  # Estimate remaining time based on average time per item
-            logging.info(f"Processed {page_counter} pages and {items_processed} items in {elapsed_time:.2f} seconds. Estimated remaining time: {estimated_remaining_time:.2f} seconds.")
+            # If 10 pages have been processed, report progress and estimate time to completion
+            if page_counter % 10 == 0:
+                elapsed_indexing_time = time.time() - indexing_start_time  # Calculate elapsed time
+                items_processed = len(self.all_media_items)  # Calculate number of items processed so far
+                average_time_per_item = elapsed_indexing_time / items_processed  # Calculate average processing time per item
+                estimated_remaining_time = average_time_per_item * (10000 - items_processed)  # Estimate remaining time based on average time per item
+                logging.info(f"Processed {page_counter} pages and {items_processed} items in {elapsed_time:.2f} seconds. Estimated remaining time: {estimated_remaining_time:.2f} seconds.")
 
         self.save_index_to_file(self.all_media_items)
+        self.fetcher_elapsed_time = time.time() - fetcher_start_time  # Calculate elapsed time
+        logging.info(f"FETCHER: Total time to fetch index: {time.time() - fetcher_start_time} seconds")
 
     def append_id_to_string(self, string_to_append, item_id):
         """Append the last 14 characters of the ID to the filename if necessary."""
@@ -223,6 +225,7 @@ class GooglePhotosDownloader:
         return appended_string
 
     def scandisk_and_get_filepaths_and_filenames(self): #scans drive for filenames and filepaths and returns a dictionary of all filenames and filepaths in the backup folder.
+        scanner_start_time = time.time()
         # updates status and orgnizes files in the backup folder.
         filepaths_and_filenames = {}
         for root_subdir in os.listdir(self.backup_path):
@@ -247,7 +250,6 @@ class GooglePhotosDownloader:
             convention_filename = convention_filename.replace('\\', '-').replace('/', '-')
             convention_filepath = os.path.normpath(os.path.join(self.backup_path, subdirectory, convention_filename))
             
-            logging.info(f"SCANNER: convention_filepath: {convention_filepath}")
             if convention_filepath in filepaths_and_filenames: #update the filepath in the index if it exists in the dictionary.
                 item['file_path'] = convention_filepath
                 item['file_size'] = os.path.getsize(convention_filepath)
@@ -301,14 +303,18 @@ class GooglePhotosDownloader:
                     logging.info(f"SCANNER: File {item['filename']} is missing")
 
 
-
+        scanner_end_time = time.time()
         verified_count = len([item for item in self.all_media_items.values() if item['status'] == 'verified'])
         missing_count = len([item for item in self.all_media_items.values() if item['status'] == 'missing'])
         logging.info(f"SCANNER: Verified {verified_count} files and found {missing_count} missing files.")
+        self.scanner_elapsed_time = scanner_end_time - scanner_start_time
+        logging.info(f"SCANNER: Validator completed processign in {scanner_end_time - scanner_start_time} seconds.")
+        time.sleep(1.5)
         return filepaths_and_filenames
 
 
     def validate_repository(self):
+        validator_start_time = time.time()
         self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
         with open(self.all_media_items_path, 'r') as f:
             self.all_media_items = json.load(f)
@@ -391,7 +397,10 @@ class GooglePhotosDownloader:
         else:
             logging.info("Invalid input. Leaving files alone")
             
-
+        validator_end_time = time.time()
+        self.validator_elapsed_time = validator_end_time - validator_start_time
+        logging.info(f"VALIDATOR: Total time to validate repository: {self.validator_elapsed_time} seconds")
+        time.sleep(1.5)
     def download_image(self, item):
         logging.info(f"DOWNLOADER: considering {item['filename']}...")
 
@@ -508,13 +517,11 @@ class GooglePhotosDownloader:
 
     def download_photos(self, all_media_items): #this function downloads all photos and videos in the all_media_items list.
         logging.info(f"Total index size: {len(self.all_media_items)}")
-        logging.info(f"Total of items to potentially download in date range: {self.job_item_count}")
-        #tally of the status values of items in self.all_media_items
-        for status, count in self.all_media_items.items():
-            logging.info(f"Status field tallies '{status}': {count} items")
-      
+        potential_job_size = len([item for item in self.all_media_items.values() if item['status'] in ['not downloaded', 'failed', 'missing', '']])
+        downloader_start_time = time.time()
         try:
-            logging.info("Downloading media...")
+            logging.info(f"Downloading approximately {potential_job_size} files...")
+            time.sleep(1.5)
             with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
                 executor.map(self.download_image, self.all_media_items.values())
 
@@ -522,6 +529,12 @@ class GooglePhotosDownloader:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
             logging.info(f"DOWNLOADER: All items processed, performing final checkpoint...")
+            downloader_end_time = time.time()
+            self.downloader_elapsed_time = downloader_end_time - downloader_start_time
+            logging.info(f"DOWNLOADER: Total time to download photos: {downloader_end_time - downloader_start_time} seconds")
+            logging.info(f"DOWNLOADER: Download rate: {potential_job_size / (downloader_end_time - downloader_start_time)} files per second")
+            logging.info(f"DOWNLOADER: Rate limiter stats: {rate_limiter}")
+
 
     def report_stats(self): #this function reports the status of all items in the index.
         # Initialize counters
@@ -580,7 +593,6 @@ class GooglePhotosDownloader:
 
     def save_index_to_file(self, all_items):
         logging.info("Starting to save lists to file...")
-
         if os.access(self.downloaded_items_path, os.W_OK):
             # Load existing items
             if os.path.exists(self.downloaded_items_path):
