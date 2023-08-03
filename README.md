@@ -15,6 +15,7 @@ This is a Python script to download photos and videos from Google Photos between
 - Handles filepath conflicts during organization
 - Ratelimits requests to avoid Google API limits
 - Provides statistics on the download results
+- Compatible with saving to a Windows OneDrive folder, even if the files are set to "free up space" and are in the cloud.
 
 ## Usage
 
