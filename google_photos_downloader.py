@@ -529,11 +529,11 @@ class GooglePhotosDownloader:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
             logging.info(f"DOWNLOADER: All items processed, performing final checkpoint...")
-            downloader_end_time = time.time()
-            self.downloader_elapsed_time = downloader_end_time - downloader_start_time
-            logging.info(f"DOWNLOADER: Total time to download photos: {downloader_end_time - downloader_start_time} seconds")
-            logging.info(f"DOWNLOADER: Download rate: {potential_job_size / (downloader_end_time - downloader_start_time)} files per second")
-            logging.info(f"DOWNLOADER: Rate limiter stats: {rate_limiter}")
+        downloader_end_time = time.time()
+        self.downloader_elapsed_time = downloader_end_time - downloader_start_time
+        logging.info(f"DOWNLOADER: Total time to download photos: {downloader_end_time - downloader_start_time} seconds")
+        logging.info(f"DOWNLOADER: Download rate: {potential_job_size / (downloader_end_time - downloader_start_time)} files per second")
+        logging.info(f"DOWNLOADER: Rate limiter stats: {rate_limiter}")
 
 
     def report_stats(self): #this function reports the status of all items in the index.
