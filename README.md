@@ -17,6 +17,9 @@ This is a Python script to download photos and videos from Google Photos between
 - Provides statistics on the download results
 - Compatible with saving to a Windows OneDrive folder, even if the files are set to "free up space" and are in the cloud.
 
+## Roadmap
+- Selection and implementaiton of a NoSQL database instead of JSON to improve performance for large video collections and enable some local search and reporting.
+
 ## Usage
 
 The script requires Python 3 and the `google-api-python-client` library.
