@@ -131,9 +131,9 @@ class GooglePhotosDownloader:
         else:
             self.all_media_items = {}
 
-        # Convert the start and end dates to UTC because the API requires UTC
+        # Convert the start and end dates to UTC because the API requires UTC (removing for test) 
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
-        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc())
+        end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
 
         # Filter out any items that are outside the date range
         self.all_media_items = {
@@ -141,7 +141,7 @@ class GooglePhotosDownloader:
             for id, item in self.all_media_items.items() 
             if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime} 
         logging.info(f"FETCHER: {len(self.all_media_items)} items are within the date range")
-
+        self.job_item_count = len(self.all_media_items) #store the number of items in the index for future progress reporting.
         date_filter = {
             "dateFilter": {
                 "ranges": [
@@ -189,7 +189,7 @@ class GooglePhotosDownloader:
                         item['status'] = 'verified'
                     else:
                         # If the filename doesn't exist in the scan results, mark it as 'not downloaded'
-                        item['status'] = 'not downloaded'
+                        item['status'] = 'not downloaded' #this can occur when the index fetch filter misaligns with the local time zone in the scan folder.
                     self.all_media_items[item['id']] = item
 
             page_token = results.get('nextPageToken')
@@ -241,12 +241,10 @@ class GooglePhotosDownloader:
             creation_time_local = convert_utc_to_local(creation_time)
             # Define the subdirectory based on the local time zone-adjusted creation time
             subdirectory = os.path.join(str(creation_time_local.year), str(creation_time_local.month))
-            logging.info(f"SCANNER: subdirectory: {subdirectory}")
             # Define the filename with the appended ID based on the local time zone-adjusted creation time
             convention_filename = self.append_id_to_string(item['filename'], item['id'])
             # Combine everything to get the full file path
             convention_filename = convention_filename.replace('\\', '-').replace('/', '-')
-            logging.info(f"SCANNER: removed slashes convention_filename: {convention_filename}")
             convention_filepath = os.path.normpath(os.path.join(self.backup_path, subdirectory, convention_filename))
             
             logging.info(f"SCANNER: convention_filepath: {convention_filepath}")
@@ -290,16 +288,18 @@ class GooglePhotosDownloader:
 
 
                 # Second loop to rename files
-                if convention_filepath in filepaths_and_filenames and item['filename'] != filepaths_and_filenames[convention_filepath]:
-                    logging.info(f"SCANNER: Filename {filepaths_and_filenames[convention_filepath]} does not match the convention. Renaming to {convention_filename}")
-                    os.rename(convention_filepath, os.path.join(os.path.dirname(convention_filepath), convention_filename))
-                    # Update the filename in the item and in the dictionary
-                    item['filename'] = convention_filename
-                    filepaths_and_filenames[convention_filepath] = convention_filename
-                    item['status'] = 'verified' #mark the item as verified if the file exists.
+                if convention_filepath in filepaths_and_filenames:
+                    if item['filename'] != filepaths_and_filenames[convention_filepath]:
+                        logging.info(f"SCANNER: Filename {filepaths_and_filenames[convention_filepath]} does not match the convention. Renaming to {convention_filename}")
+                        os.rename(convention_filepath, os.path.join(os.path.dirname(convention_filepath), convention_filename))
+                        # Update the filename in the item and in the dictionary
+                        item['filename'] = convention_filename
+                        filepaths_and_filenames[convention_filepath] = convention_filename
+                        item['status'] = 'verified' #mark the item as verified if the file exists.
                 else:
                     item['status'] = 'missing'
                     logging.info(f"SCANNER: File {item['filename']} is missing")
+
 
 
         verified_count = len([item for item in self.all_media_items.values() if item['status'] == 'verified'])
@@ -407,8 +407,8 @@ class GooglePhotosDownloader:
         is_before_start_date = creation_time_local < start_datetime_local
         is_after_end_date = creation_time_local > end_datetime_local
 
-        if is_status_downloaded or is_status_verified or is_before_start_date or is_after_end_date or item['status'] == 'failed':
-        #    return
+        if is_status_downloaded or is_status_verified or is_before_start_date or is_after_end_date:
+            return
 
         file_path = item.get('file_path')
         logging.info(f"File path from index: {file_path}")
@@ -485,31 +485,34 @@ class GooglePhotosDownloader:
                     break #if download is successful, break out of the retry loop and download the next item.
                 
                 except TimeoutError: #if the request times out, log an error and move on to the next item.
-                    logging.error(f"Request to Google Photos API for item {item['id']} timed out.") #test
+                    logging.error(f"DOWNLOADER: FAILED Request to Google Photos API for item {item['id']} timed out.") #test
                     item['status'] = 'failed' #test
                     continue #test
                 except ssl.SSLError as e: #if an SSL error occurs, log an error and move on to the next item.
                     item['status'] = 'failed'
-                    logging.error(f"SSLError occurred while trying to get {image_url}: {e}")
+                    logging.error(f"DOWNLOADER: FAILED SSLError occurred while trying to get {image_url}: {e}")
                     logging.error(f"Traceback: {traceback.format_exc()}")
                     time.sleep(1)
                 except requests.exceptions.RequestException as e: #if a request exception occurs, log an error and move on to the next item.
                     item['status'] = 'failed'
-                    logging.error(f"RequestException occurred while trying to get {image_url}: {e}")
+                    logging.error(f"DOWNLOADER: FAILE RequestException occurred while trying to get {image_url}: {e}")
                     logging.error(f"Traceback: {traceback.format_exc()}")
                     time.sleep(1)
                 except Exception as e: #if an unexpected exception occurs, log an error and try again up to 3 times.
                     item['status'] = 'failed'
-                    logging.error(f"An error occurred while trying to get {item['id']}: {e}")
+                    logging.error(f"DOWNLOADER: FAILED An error occurred while trying to get {item['id']}: {e}")
                     if attempt < 2:  # If this was not the last attempt, retry after a short wait
                         logging.info(f"Retrying download of {item['id']}...")
                     else:  # If this was the last attempt, log an error and move on to the next item
-                        logging.error(f"Failed to download {item['id']} after 3 attempts.")
+                        logging.error(f"DOWNLOADER: FAILED to download {item['id']} after 3 attempts.")
 
     def download_photos(self, all_media_items): #this function downloads all photos and videos in the all_media_items list.
-        logging.info(f"Number of items in all_media_items: {len(self.all_media_items)}")
-        logging.info(f"Statuses of items in all_media_items: {[item['status'] for item in self.all_media_items.values()]}")
-
+        logging.info(f"Total index size: {len(self.all_media_items)}")
+        logging.info(f"Total of items to potentially download in date range: {self.job_item_count}")
+        #tally of the status values of items in self.all_media_items
+        for status, count in self.all_media_items.items():
+            logging.info(f"Status field tallies '{status}': {count} items")
+      
         try:
             logging.info("Downloading media...")
             with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
@@ -641,15 +644,7 @@ if __name__ == "__main__": #this is the main function that runs when the script 
             validator.validate_repository()
             exit()
 
-        log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
-        logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(formatter)
-        logging.getLogger().addHandler(console_handler)
-
+        
         rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
         #of the Google Photos API and the requirements of your application. For example, 
         #if the API allows 10 requests per second and a maximum of 100 requests 
