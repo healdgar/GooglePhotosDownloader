@@ -204,7 +204,8 @@ class GooglePhotosDownloader:
                 elapsed_indexing_time = time.time() - indexing_start_time  # Calculate elapsed time
                 items_processed = len(self.all_media_items)  # Calculate number of items processed so far
                 average_time_per_item = elapsed_indexing_time / items_processed  # Calculate average processing time per item
-                estimated_remaining_time = average_time_per_item * (10000 - items_processed)  # Estimate remaining time based on average time per item
+                # Estimate remaining time based on average time per item
+                estimated_remaining_time = average_time_per_item * (self.job_item_count - items_processed)
                 logging.info(f"Processed {page_counter} pages and {items_processed} items in {elapsed_indexing_time:.2f} seconds. Estimated remaining time: {estimated_remaining_time:.2f} seconds.")
 
         self.save_index_to_file(self.all_media_items)
@@ -495,25 +496,25 @@ class GooglePhotosDownloader:
                 
                 except TimeoutError: #if the request times out, log an error and move on to the next item.
                     logging.error(f"DOWNLOADER: FAILED Request to Google Photos API for item {item['id']} timed out.") #test
-                    item['status'] = 'failed' #test
+                    
                     continue #test
                 except ssl.SSLError as e: #if an SSL error occurs, log an error and move on to the next item.
-                    item['status'] = 'failed'
+                    
                     logging.error(f"DOWNLOADER: FAILED SSLError occurred while trying to get {image_url}: {e}")
                     logging.error(f"Traceback: {traceback.format_exc()}")
                     time.sleep(1)
                 except requests.exceptions.RequestException as e: #if a request exception occurs, log an error and move on to the next item.
-                    item['status'] = 'failed'
+                    
                     logging.error(f"DOWNLOADER: FAILE RequestException occurred while trying to get {image_url}: {e}")
                     logging.error(f"Traceback: {traceback.format_exc()}")
                     time.sleep(1)
                 except Exception as e: #if an unexpected exception occurs, log an error and try again up to 3 times.
-                    item['status'] = 'failed'
                     logging.error(f"DOWNLOADER: FAILED An error occurred while trying to get {item['id']}: {e}")
                     if attempt < 2:  # If this was not the last attempt, retry after a short wait
                         logging.info(f"Retrying download of {item['id']}...")
                     else:  # If this was the last attempt, log an error and move on to the next item
                         logging.error(f"DOWNLOADER: FAILED to download {item['id']} after 3 attempts.")
+                        item['status'] = 'failed'
 
     def download_photos(self, all_media_items): #this function downloads all photos and videos in the all_media_items list.
         logging.info(f"Total index size: {len(self.all_media_items)}")
@@ -529,11 +530,11 @@ class GooglePhotosDownloader:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
         finally:
             logging.info(f"DOWNLOADER: All items processed, performing final checkpoint...")
-        downloader_end_time = time.time()
-        self.downloader_elapsed_time = downloader_end_time - downloader_start_time
-        logging.info(f"DOWNLOADER: Total time to download photos: {downloader_end_time - downloader_start_time} seconds")
-        logging.info(f"DOWNLOADER: Download rate: {potential_job_size / (downloader_end_time - downloader_start_time)} files per second")
-        logging.info(f"DOWNLOADER: Rate limiter stats: {rate_limiter}")
+            downloader_end_time = time.time()
+            self.downloader_elapsed_time = downloader_end_time - downloader_start_time
+            logging.info(f"DOWNLOADER: Total time to download photos: {downloader_end_time - downloader_start_time} seconds")
+            logging.info(f"DOWNLOADER: Download rate: {potential_job_size / (downloader_end_time - downloader_start_time)} files per second")
+            logging.info(f"DOWNLOADER: Rate limiter stats: {rate_limiter}")
 
 
     def report_stats(self): #this function reports the status of all items in the index.
@@ -657,7 +658,7 @@ if __name__ == "__main__": #this is the main function that runs when the script 
             exit()
 
         
-        rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
+        rate_limiter = TokenBucket(rate=1, capacity=10)  # You can adjust these numbers based on the rate limits 
         #of the Google Photos API and the requirements of your application. For example, 
         #if the API allows 10 requests per second and a maximum of 100 requests 
         # per 10 seconds, you could set rate=10 and capacity=100.
