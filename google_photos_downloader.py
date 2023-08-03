@@ -205,7 +205,7 @@ class GooglePhotosDownloader:
                 items_processed = len(self.all_media_items)  # Calculate number of items processed so far
                 average_time_per_item = elapsed_indexing_time / items_processed  # Calculate average processing time per item
                 estimated_remaining_time = average_time_per_item * (10000 - items_processed)  # Estimate remaining time based on average time per item
-                logging.info(f"Processed {page_counter} pages and {items_processed} items in {elapsed_time:.2f} seconds. Estimated remaining time: {estimated_remaining_time:.2f} seconds.")
+                logging.info(f"Processed {page_counter} pages and {items_processed} items in {elapsed_indexing_time:.2f} seconds. Estimated remaining time: {estimated_remaining_time:.2f} seconds.")
 
         self.save_index_to_file(self.all_media_items)
         self.fetcher_elapsed_time = time.time() - fetcher_start_time  # Calculate elapsed time
