@@ -250,7 +250,7 @@ class GooglePhotosDownloader:
                         filepath = os.path.normpath(os.path.join(dirpath, filename))
                         filepaths_and_filenames[filepath] = filename
 
-        logging.info(f"Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
+        logging.info(f"SCANNER: Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
         for item in self.all_media_items.values():
             # Parse the creation time and convert to local time zone
             creation_time = parse(item['mediaMetadata']['creationTime']).astimezone(pytz.utc).replace(tzinfo=None)
