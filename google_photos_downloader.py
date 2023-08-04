@@ -119,30 +119,29 @@ class GooglePhotosDownloader:
     def get_all_media_items(self, filepaths_and_filenames):
         fetcher_start_time = time.time()  # Record the starting time    
         # Load existing media items in order to avoid re-downloading them
-        self.existing_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
-        if os.path.exists(self.existing_media_items_path):
-            self.existing_media_items = {}
+        self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
+        if os.path.exists(self.all_media_items_path):
+            self.all_media_items = {}
             try:
-                with open(self.existing_media_items_path, 'r') as f:
-                    self.existing_media_items = json.load(f)
+                with open(self.all_media_items_path, 'r') as f:
+                    self.all_media_items = json.load(f)
             except json.JSONDecodeError:
                 logging.info("FETCHER: There was an error decoding the JSON file. Please check the file format.")
-            logging.info(f"Loaded {len(self.existing_media_items)} existing media items")
+            logging.info(f"Loaded {len(self.all_media_items)} existing media items")
 
         else:
-            self.new_media_items = {}
-        self.new_media_items = {} #create regardless of whether the file exists or not.  This is to avoid errors in combination logic.
+            self.all_media_items = {}
 
         # Convert the start and end dates to UTC because the API requires UTC (removing for test) 
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
 
         # Filter out any items that are outside the date range
-        self.existing_media_items = {
+        self.all_media_items = {
             id: item 
-            for id, item in self.existing_media_items.items() 
+            for id, item in self.all_media_items.items() 
             if start_datetime <= datetime.strptime(item['mediaMetadata']['creationTime'], "%Y-%m-%dT%H:%M:%S%z") <= end_datetime} 
-        logging.info(f"FETCHER: {len(self.existing_media_items)} existing items are within the date range")
+        logging.info(f"FETCHER: {len(self.all_media_items)} existing items are within the date range")
         
         date_filter = {
             "dateFilter": {
@@ -166,7 +165,7 @@ class GooglePhotosDownloader:
         page_token = None
         indexing_start_time = time.time()  # Record the starting time
         items_processed = 0  # Initialize the items processed counter outside of the loop
-        self.new_item_count = len(self.new_media_items) # Store the number of items to process for future progress reporting.
+        self.new_item_count = len(self.all_media_items) # Store the number of items to process for future progress reporting.
 
         while True: # Loop until there are no more pages
             
@@ -185,7 +184,8 @@ class GooglePhotosDownloader:
             # Get all the filenames from the scan results
             existing_filenames = set(filepaths_and_filenames.values())
             for item in items:
-                if item['id'] not in self.existing_media_items: #if the item is not already in the index, add it.
+                items_processed += 1  # Increment the items_processed counter
+                if item['id'] not in self.all_media_items: #if the item is not already in the index, add it.
                     convention_filename = self.append_id_to_string(item['filename'], item['id'])
                     convention_filename = convention_filename.replace('\\', '-').replace('/', '-') #avoid slashes in filenames
                     if convention_filename in existing_filenames:
@@ -194,7 +194,7 @@ class GooglePhotosDownloader:
                     else:
                         # If the filename doesn't exist in the scan results, mark it as 'not downloaded'
                         item['status'] = 'not downloaded' #this can occur when the index fetch filter misaligns with the local time zone in the scan folder.
-                    self.new_media_items[item['id']] = item #add the item to the index.
+                    self.all_media_items[item['id']] = item #add the item to the index.
 
             page_token = results.get('nextPageToken')
             if not page_token:
@@ -202,27 +202,26 @@ class GooglePhotosDownloader:
                 break
 
             page_counter += 1  # Increment the page counter
-            
-            # If 4 pages have been processed, report progress and estimate time to completionif page_counter % 4 == 0:
-            if page_counter % 4 == 0:                
-                elapsed_indexing_time = time.time() - indexing_start_time  # Calculate elapsed time   
-            # Check if items_processed is zero         
+
+            # If 4 pages have been processed, report progress and estimate time to completion
+            if page_counter % 10 == 0:                
+                elapsed_indexing_time = time.time() - indexing_start_time  # Calculate elapsed time
+                self.save_index_to_file(self.all_media_items)  # Save the index to file   
+
+                # Check if items_processed is zero         
                 if  items_processed == 0:
                     average_time_per_item = 0
                     estimated_remaining_time = 0
-                else:
-                    
+                else:                    
                     average_time_per_item = elapsed_indexing_time / items_processed  # Calculate average processing time per item
                     # Estimate remaining time based on average time per item
                     estimated_remaining_time = average_time_per_item * (self.new_item_count - items_processed)
-                    items_processed += 1  # Increment the items_processed counter
-                logging.info(f"Processed {page_counter} pages and {items_processed} items in {elapsed_indexing_time:.2f} seconds. Estimated remaining time: {estimated_remaining_time:.2f} seconds.")
-        #combine existing_media_items and new_media_items into all_media_items
-        self.all_media_items = {**self.existing_media_items, **self.new_media_items}
+                    
+                logging.info(f"FETCHER: Processed {page_counter} pages and {items_processed} averaging {average_time_per_item} per second. Estimated remaining time, WTH knows.")
+
         self.all_item_count = len(self.all_media_items)
-        self.save_index_to_file(self.all_media_items)
         self.fetcher_elapsed_time = time.time() - fetcher_start_time  # Calculate elapsed time
-        logging.info(f"FETCHER: Total time to fetch index: {time.time() - fetcher_start_time} seconds")
+        logging.info(f"FETCHER: Total time to fetch index: {time.time() - fetcher_start_time} seconds. ({average_time_per_item} p/sec)")
 
     def append_id_to_string(self, string_to_append, item_id):
         """Append the last 14 characters of the ID to the filename if necessary."""
@@ -250,6 +249,22 @@ class GooglePhotosDownloader:
                         filepath = os.path.normpath(os.path.join(dirpath, filename))
                         filepaths_and_filenames[filepath] = filename
 
+        # Load existing media items in case method is called without get_all_media_items
+        if len(self.all_media_items) == 0:
+            self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
+            if os.path.exists(self.all_media_items_path):
+                self.all_media_items = {}
+                try:
+                    with open(self.all_media_items_path, 'r') as f:
+                        self.all_media_items = json.load(f)
+                except json.JSONDecodeError:
+                    logging.info("SCANNER: There was an error decoding the JSON file. Please check the file format.")
+                logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
+
+            else:
+                logging.info("SCANNER: No existing media items found.")
+            
+        
         logging.info(f"SCANNER: Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
         for item in self.all_media_items.values():
             # Parse the creation time and convert to local time zone
@@ -321,8 +336,9 @@ class GooglePhotosDownloader:
         missing_count = len([item for item in self.all_media_items.values() if item['status'] == 'missing'])
         logging.info(f"SCANNER: Verified {verified_count} files and found {missing_count} missing files.")
         self.scanner_elapsed_time = scanner_end_time - scanner_start_time
-        logging.info(f"SCANNER: Validator completed processign in {scanner_end_time - scanner_start_time} seconds.")
+        logging.info(f"SCANNER: Validator completed processing in {scanner_end_time - scanner_start_time} seconds.")
         time.sleep(1.5)
+        self.save_index_to_file(self.all_media_items)
         return filepaths_and_filenames
 
 
@@ -414,6 +430,7 @@ class GooglePhotosDownloader:
         self.validator_elapsed_time = validator_end_time - validator_start_time
         logging.info(f"VALIDATOR: Total time to validate repository: {self.validator_elapsed_time} seconds")
         time.sleep(1.5)
+
     def download_image(self, item):
         logging.info(f"DOWNLOADER: considering {item['filename']}...")
 
@@ -559,6 +576,22 @@ class GooglePhotosDownloader:
         status_counts = {}
         now = datetime.now(timezone.utc)
 
+        # Load existing media items in case method is called without get_all_media_items
+        if len(self.all_media_items) == 0:
+            self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
+            if os.path.exists(self.all_media_items_path):
+                self.all_media_items = {}
+                try:
+                    with open(self.all_media_items_path, 'r') as f:
+                        self.all_media_items = json.load(f)
+                except json.JSONDecodeError:
+                    logging.info("SCANNER: There was an error decoding the JSON file. Please check the file format.")
+                logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
+
+            else:
+                logging.info("SCANNER: No existing media items found.")
+            
+
         for item in self.all_media_items.values():
             # Update the total size
             if item.get('status') in ['downloaded', 'verified'] and 'file_size' in item:
@@ -633,6 +666,7 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         parser.add_argument('--download_missing', action='store_true', help='Download all missing items')
         parser.add_argument('--auth', action='store_true', help='Perform OAuth re-authentication and refresh token')
         parser.add_argument('--validate_only', action='store_true', help='Validate the index by checking all filepaths')
+        parser.add_argument('--scan_only', action='store_true', help='Scan the backup folder and update the index')
 
         args = parser.parse_args()
         log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
@@ -660,7 +694,11 @@ if __name__ == "__main__": #this is the main function that runs when the script 
             validator.validate_repository()
             exit()
 
-        
+        if args.scan_only:
+            scanner = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
+            scanner.scandisk_and_get_filepaths_and_filenames()
+            exit()
+
         rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
         #of the Google Photos API and the requirements of your application. For example, 
         #if the API allows 10 requests per second and a maximum of 100 requests 
