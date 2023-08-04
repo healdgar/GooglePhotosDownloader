@@ -21,6 +21,7 @@ import re
 import time
 import threading
 import pytz
+import random
 
 def get_local_timezone():
     return pytz.timezone("America/Los_Angeles")  # Replace "Your_Local_Timezone" with your actual local time zone (e.g., "America/New_York")
@@ -70,9 +71,9 @@ class GooglePhotosDownloader:
         self.failed_items = []
         self.skipped_items = []
         self.auth_code = auth_code  # New argument to store the authentication code
-
-        
+        self.MAX_RETRIES = 3  # Maximum number of retries for a download attempt       
         self.downloaded_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
+
         if os.path.exists(self.downloaded_items_path):
             with open(self.downloaded_items_path, 'r') as f:
                 self.downloaded_items = json.load(f)
@@ -490,7 +491,7 @@ class GooglePhotosDownloader:
         else:   
             logging.info(f"Neither {file_path} nor {convention_file_path} exists. Starting download...")
             session = requests.Session() #creates a new session for each download attempt.  This is to prevent the session from timing out and causing the download to fail.
-            for attempt in range(3):  # Retry up to 3 times
+            for attempt in range(self.MAX_RETRIES):  # Retry up to MAX_RETRIES times
                 while not rate_limiter.consume(): #if the rate limiter is not ready, wait for a short time and try again.
                     time.sleep(0.1)  # Wait for a short time if no tokens are available
                 try:                
@@ -527,33 +528,29 @@ class GooglePhotosDownloader:
                     logging.error(f"DOWNLOADER: FAILED Request to Google Photos API for item {item['id']} timed out.") #test
                     
                     continue #test
-                except ssl.SSLError as e: #if an SSL error occurs, log an error and move on to the next item.
-                    
-                    logging.error(f"DOWNLOADER: FAILED SSLError occurred while trying to get {image_url}: {e}")
-                    logging.error(f"Traceback: {traceback.format_exc()}")
-                    time.sleep(1)
                 except requests.exceptions.RequestException as e: #if a request exception occurs, log an error and move on to the next item.
-                    
-                    logging.error(f"DOWNLOADER: FAILE RequestException occurred while trying to get {image_url}: {e}")
+                    logging.error(f"DOWNLOADER: FAILED RequestException occurred while trying to get {image_url}: {e}")
                     logging.error(f"Traceback: {traceback.format_exc()}")
                     time.sleep(1)
-                except Exception as e: #if an unexpected exception occurs, log an error and try again up to 3 times.
-                    logging.error(f"DOWNLOADER: FAILED An error occurred while trying to get {item['id']}: {e}")
-                    if attempt < 2:  # If this was not the last attempt, retry after a short wait
-                        logging.info(f"Retrying download of {item['id']}...")
-                    else:  # If this was the last attempt, log an error and move on to the next item
-                        logging.error(f"DOWNLOADER: FAILED to download {item['id']} after 3 attempts.")
+                except (requests.exceptions.RequestException, ssl.SSLError) as e:
+                    if attempt < self.MAX_RETRIES - 1:
+                        logging.error(f"Error occurred while trying to get {image_url}: {e}. Retrying...")
+                        wait_time = (2 ** attempt) + random.random()  # Exponential backoff with jitter
+                        time.sleep(wait_time)
+                    else:
+                        logging.error(f"Failed to download {item['id']} after {MAX_RETRIES} attempts.")
                         item['status'] = 'failed'
+                        break
 
     def download_photos(self, all_media_items): #this function downloads all photos and videos in the all_media_items list.
-        logging.info(f"Total index size: {len(self.all_media_items)}")
-        potential_job_size = len([item for item in self.all_media_items.values() if item['status'] in ['not downloaded', 'failed', 'missing', '']])
+        logging.info(f"Total index size: {len(all_media_items)}")
+        potential_job_size = len([item for item in all_media_items.values() if item.get('status') not in ['downloaded', 'verified']])
         downloader_start_time = time.time()
         try:
             logging.info(f"Downloading approximately {potential_job_size} files...")
             time.sleep(1.5)
             with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                executor.map(self.download_image, self.all_media_items.values())
+                executor.map(self.download_image, all_media_items.values())
 
         except Exception as e:
             logging.error(f"An unexpected error occurred in download_photos: {e}")
@@ -699,7 +696,7 @@ if __name__ == "__main__": #this is the main function that runs when the script 
             scanner.scandisk_and_get_filepaths_and_filenames()
             exit()
 
-        rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
+        rate_limiter = TokenBucket(rate=1, capacity=10)  # You can adjust these numbers based on the rate limits 
         #of the Google Photos API and the requirements of your application. For example, 
         #if the API allows 10 requests per second and a maximum of 100 requests 
         # per 10 seconds, you could set rate=10 and capacity=100.
@@ -707,10 +704,17 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers) #creates a new instance of the GooglePhotosDownloader class.
         
         if args.download_missing:
-            
+            all_media_items_path = os.path.normpath(os.path.join(args.backup_path, 'DownloadItems.json'))
+            if os.path.exists(all_media_items_path):
+                all_media_items = {}
+                try:
+                    with open(all_media_items_path, 'r') as f:
+                        all_media_items = json.load(f)
+                except json.JSONDecodeError:
+                    logging.info("There was an error decoding the JSON file. Please check the file format.")
 
             # Get only the items marked as 'missing' or 'not downloaded'
-            missing_media_items = {id: item for id, item in downloader.downloaded_items.items() if item['status'] not in ['downloaded', 'verified']}
+            missing_media_items = {id: item for id, item in all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)  # Download only missing photos and videos in the index.
             downloader.save_index_to_file(downloader.all_media_items) #save the index to the JSON index file.
             downloader.report_stats() #report the status of all items in the index.
