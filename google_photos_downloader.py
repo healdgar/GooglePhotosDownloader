@@ -242,7 +242,7 @@ class GooglePhotosDownloader:
 
     def scandisk_and_get_filepaths_and_filenames(self): #scans drive for filenames and filepaths and returns a dictionary of all filenames and filepaths in the backup folder.
         scanner_start_time = time.time()
-        # updates status and orgnizes files in the backup folder.
+        # loop through all files in the backup folder and create a dictionary of all filenames and filepaths.
         filepaths_and_filenames = {}
         for root_subdir in os.listdir(self.backup_path):
             root_subdir_path = os.path.normpath(os.path.join(self.backup_path, root_subdir))
@@ -268,7 +268,7 @@ class GooglePhotosDownloader:
             else:
                 logging.info("SCANNER: No existing media items found.")
             
-        
+        #loop through all items in the index and update the file path and status.
         logging.info(f"SCANNER: Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
         for item in self.all_media_items.values():
             # Parse the creation time and convert to local time zone
@@ -291,7 +291,7 @@ class GooglePhotosDownloader:
             if item['filename'] in filepaths_and_filenames.values():
                 
                 current_filepaths = [path for path, name in filepaths_and_filenames.items() if name == convention_filename] #get a list of all filepaths with the same filename.
-                # First loop to move files
+                #first subloop to move files to the correct location if they are named correctly.
                 for current_filepath in current_filepaths:
                     # If the file is properly named but not in the correct location, move it
                     if current_filepath and current_filepath != convention_filepath:
@@ -321,7 +321,7 @@ class GooglePhotosDownloader:
                                     logging.info(f"SCANNER: File already exists in the backup directory. Skipping move.")
 
 
-                # Second loop to rename files
+                # Second subloop to rename files found on the drive that are named and located correctly
                 if convention_filepath in filepaths_and_filenames:
                     if item['filename'] != filepaths_and_filenames[convention_filepath]:
                         logging.info(f"SCANNER: Filename {filepaths_and_filenames[convention_filepath]} does not match the convention. Renaming to {convention_filename}")
@@ -334,6 +334,25 @@ class GooglePhotosDownloader:
                     item['status'] = 'missing'
                     logging.info(f"SCANNER: File {item['filename']} is missing")
 
+                #third subloop to loop to look for items in the index that only have source filename,
+                #and add any missing file_path or file_size or status values to the index.
+                if not item.get('file_path'):
+                    # file path is missing or None: 
+                    logging.info(f"SCANNER: File {convention_filepath} exists, adding file_path to index.")
+                    item['file_size'] = os.path.getsize(convention_filepath)
+                    item['file_path'] = convention_filepath
+                    #update filename to convention_filename if it doesn't match.
+                    if item['filename'] != convention_filename:
+                        logging.info(f"SCANNER: Filename {item['filename']} does not match the convention. Renaming filename and adding status and filename to index.")
+                        item['filename'] = convention_filename
+                        filepaths_and_filenames[convention_filepath] = convention_filename
+                        os.rename(convention_filepath, os.path.join(os.path.dirname(convention_filepath), convention_filename))
+                        item['status'] = 'verified'
+                    else: #ensure the status and filename exist in the record if the stray file is correctly named, in the index, but doesn't have this info.
+                        logging.info(f"SCANNER: Filename {item['filename']} matches the convention. Updating index status and filename.")
+                        item['filename'] = convention_filename
+                        item['status'] = 'verified'  
+                        filepaths_and_filenames[convention_filepath] = convention_filename                            
 
         scanner_end_time = time.time()
         verified_count = len([item for item in self.all_media_items.values() if item['status'] == 'verified'])
@@ -348,9 +367,19 @@ class GooglePhotosDownloader:
 
     def validate_repository(self):
         validator_start_time = time.time()
+
         self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
-        with open(self.all_media_items_path, 'r') as f:
-            self.all_media_items = json.load(f)
+        if os.path.exists(self.all_media_items_path):
+            self.all_media_items = {}
+            try:
+                with open(self.all_media_items_path, 'r') as f:
+                    self.all_media_items = json.load(f)
+            except json.JSONDecodeError:
+                logging.info("SCANNER: There was an error decoding the JSON file. Please check the file format.")
+            logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
+
+        else:
+            logging.info("SCANNER: No existing media items found.")
 
         logging.info(f"VALIDATOR: Number of items loaded to all_media_items for validate index: {len(self.all_media_items)}")
 
@@ -358,21 +387,21 @@ class GooglePhotosDownloader:
         validated_count = 0
         validated_files = []
         missing_files = []
-        backup_repository = self.backup_path
+      
+        for item in self.all_media_items.values():
+            if item.get('file_path') is not None:
+                file_path_to_verify = os.path.normpath(item['file_path'])
 
-        for id, item in self.all_media_items.items():
-            file_path_to_verify = os.path.normpath(item['file_path'])
-
-            try:
-                if file_path_to_verify is not None and os.path.exists(file_path_to_verify):
-                    validated_count += 1
-                    validated_files.append(file_path_to_verify)
-                else:
-                    missing_count += 1
-                    missing_files.append(file_path_to_verify)
-            except:
-                logging.info(f"Error verifying file {file_path_to_verify}")
-                continue
+                try:
+                    if file_path_to_verify is not None and os.path.exists(file_path_to_verify):
+                        validated_count += 1
+                        validated_files.append(file_path_to_verify)
+                    else:
+                        missing_count += 1
+                        missing_files.append(file_path_to_verify)
+                except:
+                    logging.info(f"Error verifying file {file_path_to_verify}")
+                    continue
 
         logging.info(f"VALIDATOR: Verified {validated_count} indexed file paths and found {missing_count} missing files.")
         logging.info(f'VALIDATOR: The last validated file path was {file_path_to_verify}')
@@ -447,10 +476,11 @@ class GooglePhotosDownloader:
         # Compare creation_time_local with start_datetime_local and end_datetime_local
         is_status_downloaded = item.get('status', '') == 'downloaded'
         is_status_verified = item.get('status', '') == 'verified'
+        is_already_at_path = item.get('file_path', '') == os.path.normpath(os.path.join(self.backup_path, item['filename']))
         is_before_start_date = creation_time_local < start_datetime_local
         is_after_end_date = creation_time_local > end_datetime_local
 
-        if is_status_downloaded or is_status_verified: # or is_before_start_date or is_after_end_date: -- removed for test
+        if is_status_downloaded or is_status_verified or is_already_at_path: # or is_before_start_date or is_after_end_date: -- removed for test
             return
 
         file_path = item.get('file_path')
@@ -728,7 +758,9 @@ if __name__ == "__main__": #this is the main function that runs when the script 
 
             # Get only the items marked as 'missing' or 'not downloaded'
             missing_media_items = {id: item for id, item in all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
+            downloader.scandisk_and_get_filepaths_and_filenames()  #obtains a list of all filepaths in the backup folder
             downloader.download_photos(missing_media_items)  # Download only missing photos and videos in the index.
+            
             #update status of items JSON index file by comparing all_media_items with finalized all_media_items, which should include updated status.
             all_media_items.update(missing_media_items)
             downloader.save_index_to_file(all_media_items) #save the index to the JSON index file.
@@ -762,4 +794,5 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         traceback.print_exc()  # This will print the traceback
 
     #sample usage: 
-    # python google_photos_downloader.py --start_date 2016-12-31 --end_date 2017-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 10 --download_missing
+# python google_photos_downloader.py --start_date 2016-12-31 --end_date 2017-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 10 --download_missing
+# python google_photos_downloader.py --start_date 2016-12-31 --end_date 2017-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 10 --scan_only
