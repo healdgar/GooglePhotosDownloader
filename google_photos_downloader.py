@@ -610,7 +610,7 @@ class GooglePhotosDownloader:
             logging.info(f"DOWNLOADER: Total time to download photos: {downloader_end_time - downloader_start_time} seconds")
             logging.info(f"DOWNLOADER: Download rate: {self.potential_job_size / (downloader_end_time - downloader_start_time)} files per second")
             logging.info(f"DOWNLOADER: Rate limiter stats: {rate_limiter}")
-
+            self.save_index_to_file(all_media_items)
 
     def report_stats(self): #this function reports the status of all items in the index.
         # Initialize counters
@@ -709,7 +709,7 @@ class GooglePhotosDownloader:
             except json.JSONDecodeError:
                 logging.info("There was an error decoding the JSON file. Please check the file format.")
 
-    if __name__ == "__main__": #this is the main function that runs when the script is executed.
+if __name__ == "__main__": #this is the main function that runs when the script is executed.
     try:
         parser = argparse.ArgumentParser(description='Google Photos Downloader')
         parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')

@@ -5,7 +5,8 @@
 
 # Ignore all .env files (commonly used for secrets)
 *.env
-
+# ignore all .txt files
+*.txt
 # Ignore all .json files in the root directory (also commonly used for secrets)
 /*.json
 checkcsv.py
@@ -29,7 +30,6 @@ writededupedjson.py
 pathverifyer.py
 deletenonverified.py
 convertlistofdictstodicts.py
-
 writededupedjson.py
 extraneous_files.txt
 validated_files.txt
