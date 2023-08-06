@@ -33,3 +33,5 @@ convertlistofdictstodicts.py
 writededupedjson.py
 extraneous_files.txt
 validated_files.txt
+missing_files.txt
+validated_files.txt

@@ -216,11 +216,9 @@ class GooglePhotosDownloader:
                 # Check if items_processed is zero         
                 if  items_processed == 0:
                     average_time_per_item = 0
-                    estimated_remaining_time = 0
                 else:                    
-                    average_time_per_item = elapsed_indexing_time / items_processed  # Calculate average processing time per item
-                    # Estimate remaining time based on average time per item
-                    estimated_remaining_time = average_time_per_item * (self.new_item_count - items_processed)
+                    average_time_per_item = items_processed / elapsed_indexing_time # Calculate average processing time per item
+
                     
                 logging.info(f"FETCHER: Processed {page_counter} pages and {items_processed} averaging {average_time_per_item} per second. Estimated remaining time, WTH knows.")
 
@@ -784,10 +782,11 @@ if __name__ == "__main__": #this is the main function that runs when the script 
             exit()
             
         if args.refresh_index:
-            downloader.get_all_media_items
+            downloader.get_all_media_items #first get the index from the server.
             filepaths_and_filenames = downloader.scandisk_and_get_filepaths_and_filenames()  # First get the scan results
             downloader.get_all_media_items(filepaths_and_filenames)  # Then refresh the index, using the scan results for comparison
-        else:
+        """ commenting out... as this seems redundant with load file in teh get_all_media_items method.
+        else:  
             # Check if the file exists
             if not os.path.exists(downloader.downloaded_items_path):
                 # If it doesn't exist, create a new JSON file
@@ -798,6 +797,7 @@ if __name__ == "__main__": #this is the main function that runs when the script 
                 # If it exists, load the existing data from the JSON file
                 with open(downloader.downloaded_items_path, 'r') as f:
                     downloader.all_media_items = json.load(f)
+        """
 
         downloader.scandisk_and_get_filepaths_and_filenames()  #obtains a list of all filepaths in the backup folder
         downloader.download_photos(downloader.all_media_items) #download all photos and videos in the index.
