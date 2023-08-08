@@ -120,23 +120,12 @@ class GooglePhotosDownloader:
         logging.info("Connected to Google server.")   
 
 
-    def get_all_media_items(self, filepaths_and_filenames): #This method is used to fetch all media items from the Google Photos API
+    def get_all_media_items(self): #This method is used to fetch all media items from the Google Photos API
         #and store them in a dictionary.
         fetcher_start_time = time.time()  # Record the starting time    
-        # Load existing media items in order to avoid re-downloading them
-        self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
-        if os.path.exists(self.all_media_items_path):
-            self.all_media_items = {}
-            try:
-                with open(self.all_media_items_path, 'r') as f:
-                    self.all_media_items = json.load(f)
-            except json.JSONDecodeError:
-                logging.info("FETCHER: There was an error decoding the JSON file. Please check the file format.")
-            logging.info(f"Loaded {len(self.all_media_items)} existing media items")
+        # Load existing media items in order to avoid re-downloading them 
 
-        else:
-            self.all_media_items = {}
-
+        self.all_media_items = self.downloaded_items 
         # Convert the start and end dates to UTC because the API requires UTC (removing for test) 
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
@@ -170,14 +159,14 @@ class GooglePhotosDownloader:
         page_token = None
         indexing_start_time = time.time()  # Record the starting time
         items_processed = 0  # Initialize the items processed counter outside of the loop
-        self.new_item_count = len(self.all_media_items) # Store the number of items to process for future progress reporting.
 
         while True: # Loop until there are no more pages
             
             results = self.photos_api.mediaItems().search(
                 body={
                     'pageToken': page_token,
-                    'filters': date_filter  
+                    'filters': date_filter,
+                    'pageSize': 99  # Set the pageSize here  
                 } 
             ).execute()
 
@@ -186,19 +175,14 @@ class GooglePhotosDownloader:
                 logging.info("FETCHER: No more results")
                 break
 
-            # Get all the filenames from the scan results
-            existing_filenames = set(filepaths_and_filenames.values())
+  
             for item in items:
                 items_processed += 1  # Increment the items_processed counter
                 if item['id'] not in self.all_media_items: #if the item is not already in the index, add it.
                     convention_filename = self.append_id_to_string(item['filename'], item['id'])
                     convention_filename = convention_filename.replace('\\', '-').replace('/', '-') #avoid slashes in filenames
-                    if convention_filename in existing_filenames:
-                        # If the filename already exists in the scan results, mark it as 'verified'
-                        item['status'] = 'verified'
-                    else:
-                        # If the filename doesn't exist in the scan results, mark it as 'not downloaded'
-                        item['status'] = 'not downloaded' #this can occur when the index fetch filter misaligns with the local time zone in the scan folder.
+                    # If the filename doesn't exist in the scan results, mark it as 'not downloaded'
+                    item['status'] = 'fetched' #fetched but not verified by scan.
                     self.all_media_items[item['id']] = item #add the item to the index.
 
             page_token = results.get('nextPageToken')
@@ -208,7 +192,7 @@ class GooglePhotosDownloader:
 
             page_counter += 1  # Increment the page counter
 
-            # If 4 pages have been processed, report progress and estimate time to completion
+            # If 10 pages have been processed, report progress and estimate time to completion
             if page_counter % 10 == 0:                
                 elapsed_indexing_time = time.time() - indexing_start_time  # Calculate elapsed time
                 self.save_index_to_file(self.all_media_items)  # Save the index to file   
@@ -220,11 +204,12 @@ class GooglePhotosDownloader:
                     average_time_per_item = items_processed / elapsed_indexing_time # Calculate average processing time per item
 
                     
-                logging.info(f"FETCHER: Processed {page_counter} pages and {items_processed} averaging {average_time_per_item} per second. Estimated remaining time, WTH knows.")
+                logging.info(f"FETCHER: Processed {page_counter} pages and {items_processed} items averaging {average_time_per_item} per second. Estimated remaining time, WTH knows.")
 
         self.all_item_count = len(self.all_media_items)
         self.fetcher_elapsed_time = time.time() - fetcher_start_time  # Calculate elapsed time
         logging.info(f"FETCHER: Total time to fetch index: {time.time() - fetcher_start_time} seconds. ({average_time_per_item} p/sec)")
+        self.save_index_to_file(self.all_media_items)  # Save the index to file
 
     def append_id_to_string(self, string_to_append, item_id):
         # this method is used to append the last 14 digits of the Google Photos ID to a string (usually a file_path or filename)
@@ -255,18 +240,8 @@ class GooglePhotosDownloader:
         # Load existing media items in case method is called without get_all_media_items.
         #should possibly be moved to a separate method, because it is repeated.  Possibly a load_index_from_file method.
         if len(self.all_media_items) == 0:
-            self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
-            if os.path.exists(self.all_media_items_path):
-                self.all_media_items = {}
-                try:
-                    with open(self.all_media_items_path, 'r') as f:
-                        self.all_media_items = json.load(f)
-                except json.JSONDecodeError:
-                    logging.info("SCANNER: There was an error decoding the JSON file. Please check the file format.")
-                logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
-
-            else:
-                logging.info("SCANNER: No existing media items found.")
+            self.load_index_from_file()
+            logging.info("SCANNER: No media items in memory, loading from file.")
             
         #loop through all items in the index and update the file path and status.  Possibly move to a separate method called update_index.
         logging.info(f"SCANNER: Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
@@ -285,6 +260,7 @@ class GooglePhotosDownloader:
             if convention_filepath in filepaths_and_filenames: #update the filepath in the index if it exists in the dictionary.
                 item['file_path'] = convention_filepath
                 item['file_size'] = os.path.getsize(convention_filepath)
+                item['filename'] = convention_filename
                 item['status'] = 'verified' #mark the item as verified if the file exists.
                 logging.info(f"SCANNER: File {convention_filepath} verified")
 
@@ -376,13 +352,13 @@ class GooglePhotosDownloader:
                 with open(self.all_media_items_path, 'r') as f:
                     self.all_media_items = json.load(f)
             except json.JSONDecodeError:
-                logging.info("SCANNER: There was an error decoding the JSON file. Please check the file format.")
+                logging.info("VALIDATOR: There was an error decoding the JSON file. Please check the file format.")
             logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
 
         else:
-            logging.info("SCANNER: No existing media items found.")
+            logging.info("VALIDATOR: No existing media items found.")
 
-        logging.info(f"VALIDATOR: Number of items loaded to all_media_items for validate index: {len(self.all_media_items)}")
+        logging.info(f"VALIDATOR: Number of items loaded to all_media_items for checking existing file paths in index: {len(self.all_media_items)}")
 
         missing_count = 0
         validated_count = 0
@@ -561,6 +537,7 @@ class GooglePhotosDownloader:
                     item['file_path'] = convention_file_path  # record the file path
                     item['file_size'] = os.path.getsize(convention_file_path)  # record the file size
                     item['status'] = 'downloaded'  # record the status
+                    item['filename'] = convention_filename #record the filename
                     logging.info(f"DOWNLOADER: Downloaded {convention_file_path}")
                     
                     if self.download_counter % self.progress_log_interval == 0:
@@ -621,20 +598,7 @@ class GooglePhotosDownloader:
         now = datetime.now(timezone.utc)
 
         # Load existing media items in case method is called without get_all_media_items
-        if len(self.all_media_items) == 0:
-            self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
-            if os.path.exists(self.all_media_items_path):
-                self.all_media_items = {}
-                try:
-                    with open(self.all_media_items_path, 'r') as f:
-                        self.all_media_items = json.load(f)
-                except json.JSONDecodeError:
-                    logging.info("SCANNER: There was an error decoding the JSON file. Please check the file format.")
-                logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
-
-            else:
-                logging.info("SCANNER: No existing media items found.")
-            
+        self.load_index_from_file()
 
         for item in self.all_media_items.values():
             # Update the total size
@@ -663,7 +627,7 @@ class GooglePhotosDownloader:
                 status_counts[status] += 1
 
         # Print the stats
-        logging.info(f"Total size: {total_size} bytes") #of downloaded or verified files.
+        logging.info(f"Total size: {total_size/1024/1024} bytes") #of downloaded or verified files.
         logging.info(f"Total file records: {total_files}")
         logging.info(f"Total image records: {total_images}")
         logging.info(f"Total video records: {total_videos}")
@@ -704,6 +668,7 @@ class GooglePhotosDownloader:
             try:
                 with open(all_media_items_path, 'r') as f:
                     self.all_media_items = json.load(f)
+                print(f"Loaded {len(self.all_media_items)} existing media items from file.")
             except json.JSONDecodeError:
                 logging.info("There was an error decoding the JSON file. Please check the file format.")
 
@@ -714,7 +679,7 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
         parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
         parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
-        parser.add_argument('--refresh_index', action='store_true', help='Refresh the index by fetching a new one from the server')
+        parser.add_argument('--fetch_only', action='store_true', help='Refresh the index by fetching a new one from the server')
         parser.add_argument('--stats_only', action='store_true', help='Only report status of items in the index')
         parser.add_argument('--download_missing', action='store_true', help='Download all missing items')
         parser.add_argument('--auth', action='store_true', help='Perform OAuth re-authentication and refresh token')
@@ -731,27 +696,6 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         console_handler.setFormatter(formatter)
         logging.getLogger().addHandler(console_handler)
 
-
-        if args.auth:
-            # If --auth argument is provided, perform OAuth authentication
-            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
-            downloader.authenticate()
-
-        if args.stats_only:
-            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
-            downloader.report_stats()
-            exit()
-        
-        if args.validate_only:
-            validator = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
-            validator.validate_repository()
-            exit()
-
-        if args.scan_only:
-            scanner = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
-            scanner.scandisk_and_get_filepaths_and_filenames()
-            exit()
-
         rate_limiter = TokenBucket(rate=1, capacity=20)  # You can adjust these numbers based on the rate limits 
         #of the Google Photos API and the requirements of your application. For example, 
         #if the API allows 10 requests per second and a maximum of 100 requests 
@@ -759,49 +703,32 @@ if __name__ == "__main__": #this is the main function that runs when the script 
 
         downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers) #creates a new instance of the GooglePhotosDownloader class.
         
-        if args.download_missing:
-            all_media_items_path = os.path.normpath(os.path.join(args.backup_path, 'DownloadItems.json'))
-            if os.path.exists(all_media_items_path):
-                all_media_items = {}
-                try:
-                    with open(all_media_items_path, 'r') as f:
-                        all_media_items = json.load(f)
-                except json.JSONDecodeError:
-                    logging.info("There was an error decoding the JSON file. Please check the file format.")
+        if args.auth:
+            # If --auth argument is provided, perform OAuth authentication
+            downloader.authenticate()
 
-            # Get only the items marked as 'missing' or 'not downloaded'
-            missing_media_items = {id: item for id, item in all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
-            downloader.scandisk_and_get_filepaths_and_filenames()  #obtains a list of all filepaths in the backup folder
+        if args.stats_only:
+            downloader.report_stats()
+            exit()
+        
+        if args.validate_only:
+            downloader.validate_repository()
+            exit()
+
+        if args.scan_only:
+            downloader.scandisk_and_get_filepaths_and_filenames()
+            exit()
+
+        if args.download_missing:
+            # Get the items not marked as 'verified' or 'downloaded'
+            missing_media_items = {id: item for id, item in downloader.downloaded_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)  # Download only missing photos and videos in the index.
-            
-            #update status of items JSON index file by comparing all_media_items with finalized all_media_items, which should include updated status.
-            all_media_items.update(missing_media_items)
-            downloader.save_index_to_file(all_media_items) #save the index to the JSON index file.
-            downloader.report_stats() #report the status of all items in the index.
-            #exit program after downloading missing files.
             exit()
             
-        if args.refresh_index:
-            downloader.get_all_media_items #first get the index from the server.
-            filepaths_and_filenames = downloader.scandisk_and_get_filepaths_and_filenames()  # First get the scan results
-            downloader.get_all_media_items(filepaths_and_filenames)  # Then refresh the index, using the scan results for comparison
-        """ commenting out... as this seems redundant with load file in teh get_all_media_items method.
-        else:  
-            # Check if the file exists
-            if not os.path.exists(downloader.downloaded_items_path):
-                # If it doesn't exist, create a new JSON file
-                with open(downloader.downloaded_items_path, 'w') as f:
-                    # Initialize the JSON file with an empty dictionary
-                    json.dump({}, f, indent=4)
-            else:
-                # If it exists, load the existing data from the JSON file
-                with open(downloader.downloaded_items_path, 'r') as f:
-                    downloader.all_media_items = json.load(f)
-        """
+        if args.fetch_only:
+            downloader.get_all_media_items() #get the index from the server for items in the date range.
+            exit()
 
-        downloader.scandisk_and_get_filepaths_and_filenames()  #obtains a list of all filepaths in the backup folder
-        downloader.download_photos(downloader.all_media_items) #download all photos and videos in the index.
-        downloader.save_index_to_file(downloader.all_media_items) #save the index to the JSON index file.
         downloader.report_stats() #report the status of all items in the index.
 
     except Exception as e:
@@ -810,4 +737,4 @@ if __name__ == "__main__": #this is the main function that runs when the script 
 
     #sample usage: 
 # python google_photos_downloader.py --start_date 2016-12-31 --end_date 2017-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 10 --download_missing
-# python google_photos_downloader.py --start_date 2016-12-31 --end_date 2017-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 10 --scan_only
+# python google_photos_downloader.py --start_date 2020-03-31 --end_date 2020-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 1 --download_missing
