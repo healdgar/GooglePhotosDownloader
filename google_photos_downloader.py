@@ -59,7 +59,7 @@ class TokenBucket: #this class is used to limit the rate of requests to the Goog
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
 
-    def __init__(self, start_date, end_date, backup_path, num_workers=5, checkpoint_interval=25, auth_code=None):
+    def __init__(self, backup_path, start_date=None, end_date=None, num_workers=5, checkpoint_interval=25, auth_code=None):
 
         self.start_date = start_date
         self.end_date = end_date
@@ -444,22 +444,21 @@ class GooglePhotosDownloader:
 
     def download_image(self, item):
         logging.info(f"DOWNLOADER: considering {item['filename']}...")
+        download_start_timestamp = time.time()  # Record the starting time
 
         # Parse the creation time and convert to local time zone
         creation_time_local = convert_utc_to_local(parse(item['mediaMetadata']['creationTime']))
         # Convert the download filter start and end dates to local time zone
-        start_datetime_local = convert_utc_to_local(datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc()))
-        end_datetime_local = convert_utc_to_local(datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1))
+        # start_datetime_local = convert_utc_to_local(datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc()))
+        # end_datetime_local = convert_utc_to_local(datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1))
         
         # Compare creation_time_local with start_datetime_local and end_datetime_local
         is_status_downloaded = item.get('status', '') == 'downloaded'
         is_status_verified = item.get('status', '') == 'verified'
-        is_already_at_path = item.get('file_path', '') == os.path.normpath(os.path.join(self.backup_path, item['filename']))
-        is_before_start_date = creation_time_local < start_datetime_local
-        is_after_end_date = creation_time_local > end_datetime_local
+        #is_already_at_path = item.get('file_path', '') == os.path.normpath(os.path.join(self.backup_path, item['filename']))
 
-        if is_status_downloaded or is_status_verified or is_already_at_path: # or is_before_start_date or is_after_end_date: -- removed for test
-            return
+        #if is_status_downloaded or is_status_verified or is_already_at_path: # or is_before_start_date or is_after_end_date: -- removed for test
+        #    return
 
         file_path = item.get('file_path')
         logging.info(f"File path from index: {file_path}")
@@ -473,6 +472,7 @@ class GooglePhotosDownloader:
         convention_filename = convention_filename.replace('\\', '-').replace('/', '-') #avoid slashes in filenames
         convention_file_path = os.path.normpath(os.path.join(self.backup_path, subdirectory, convention_filename))
         
+        """  REMOVING INDEX UPDATING TASKS
         # if the file exists at either the original or the convention path, check if the filename matches the convention.
         if file_path is not None and os.path.exists(file_path):
             # if the filename doesn't match the convention, rename the file, update the path, and mark it verified, and do not download it.
@@ -493,78 +493,82 @@ class GooglePhotosDownloader:
                 logging.info(f"File {current_file_path} updated to {convention_file_path} and verified")
                 return
 
-            # If the filename exists at the convention path (according to the index), mark it verified and do not download it.
+            #If the filename exists at the convention path (according to the index), mark it verified and do not download it.
             if item['file_path'] == convention_file_path:
                 item['status'] = 'verified'
                 logging.info(f"File {convention_file_path} already exists, verified")        
                 return 
-
+            SEPARATION OF CONCERNS"""
         # If the file cannot be found at either file_path, download it.
         
-        else:   
-            logging.info(f"Neither {file_path} nor {convention_file_path} exists. Starting download...")
-            session = requests.Session() #creates a new session for each download attempt.  This is to prevent the session from timing out and causing the download to fail.
-            for attempt in range(self.MAX_RETRIES):  # Retry up to MAX_RETRIES times.  Part of exponential backoff.
-                while not rate_limiter.consume(): #if the rate limiter is not ready, wait for a short time and try again.
-                    time.sleep(0.1)  # Wait for a short time if no tokens are available
-                try:                
-                    logging.info(f"DOWNLOADER: About to make request to Google Photos API for item {item['filename']}...")
-                    image = self.photos_api.mediaItems().get(mediaItemId=item['id']).execute()
-                    #logging.info(f"DOWNLOADER: Response from Google Photos API: {image}")
-                    logging.info("DOWNLOADER: Request to Google Photos API completed.")
+        
+        logging.info(f"DOWNLOADER: Starting download request for {convention_file_path}")
+        session = requests.Session() #creates a new session for each download attempt.  This is to prevent the session from timing out and causing the download to fail.
+        for attempt in range(self.MAX_RETRIES):  # Retry up to MAX_RETRIES times.  Part of exponential backoff.
+            while not rate_limiter.consume(): #if the rate limiter is not ready, wait for a short time and try again.
+                time.sleep(0.1)  # Wait for a short time if no tokens are available
+            try:                
+                logging.info(f"DOWNLOADER: About to make request to Google Photos API for item {item['filename']}...")
+                image = self.photos_api.mediaItems().get(mediaItemId=item['id']).execute()
+                #logging.info(f"DOWNLOADER: Response from Google Photos API: {image}")
+                logging.info("DOWNLOADER: Request to Google Photos API completed.")
 
-                    if 'video' in item['mimeType']:  # Check if 'video' is in mimeType. need to account for motion photos and other media types.
-                        image_url = image['baseUrl'] + '=dv' #motion videos also dowlnoad as =dv. Stil testing.
-                        logging.info(f"DOWNLOADER: Video URLfound")
-                    if 'image' in item['mimeType']:
-                        image_url = image['baseUrl'] + '=d'
-                        logging.info(f"DOWNLOADER: Image URLfound")
-                    else:
-                        image_url = image['baseUrl'] + '=d'
-                        logging.info(f"DOWNLOADER: Other media type URL found... confirm dwonload.")
+                if 'video' in item['mimeType']:  # Check if 'video' is in mimeType. need to account for motion photos and other media types.
+                    image_url = image['baseUrl'] + '=dv' #motion videos also dowlnoad as =dv. Stil testing.
+                    logging.info(f"DOWNLOADER: Video URLfound")
+                if 'image' in item['mimeType']:
+                    image_url = image['baseUrl'] + '=d'
+                    logging.info(f"DOWNLOADER: Image URLfound")
+                else:
+                    image_url = image['baseUrl'] + '=d'
+                    logging.info(f"DOWNLOADER: Other media type URL found... confirm dwonload.")
 
-                    logging.info(f"DOWNLOADER: Attempting to download {convention_file_path}...")  # Log a message before the download attempt
-                    response = session.get(image_url, stream=True)
-                    logging.info(f"DOWNLOADER: Download attempt finished. Status code: {response.status_code}")  # Log a message after the download attempt
-                    self.download_counter += 1
-                    # Log the status code and headers
-                    logging.info(f"DOWNLOADER: Response status code: {response.status_code}")
-                    logging.info(f"DOWNLOADER: Response headers: {response.headers}")
-                    os.makedirs(os.path.dirname(convention_file_path), exist_ok=True)
-                    with open(convention_file_path, "wb") as f: 
-                        f.write(response.content) #write the file to the backup folder
+                logging.info(f"DOWNLOADER: Attempting to download {convention_file_path}...")  # Log a message before the download attempt
+                response = session.get(image_url, stream=True)
+                logging.info(f"DOWNLOADER: Download attempt finished. Status code: {response.status_code}")  # Log a message after the download attempt
+                self.download_counter += 1
+                # Log the status code and headers
+                logging.info(f"DOWNLOADER: Response status code: {response.status_code}")
+                logging.info(f"DOWNLOADER: Response headers: {response.headers}")
+                os.makedirs(os.path.dirname(convention_file_path), exist_ok=True)
+                with open(convention_file_path, "wb") as f: 
+                    f.write(response.content) #write the file to the backup folder
 
-                    item['file_path'] = convention_file_path  # record the file path
-                    item['file_size'] = os.path.getsize(convention_file_path)  # record the file size
-                    item['status'] = 'downloaded'  # record the status
-                    item['filename'] = convention_filename #record the filename
-                    logging.info(f"DOWNLOADER: Downloaded {convention_file_path}")
-                    
-                    if self.download_counter % self.progress_log_interval == 0:
-                        percent_complete = (self.download_counter / self.potential_job_size) * 100
-                        logging.info(Fore.GREEN + f"Progress: {percent_complete:.2f}% complete" + Style.RESET_ALL)
-                        logging.info(Fore.CYAN + f"DOWNLOADER: Processed {self.download_counter} files out of {self.potential_job_size} files." + Style.RESET_ALL)
-                    break #if download is successful, break out of the retry loop and download the next item.
+                item['file_path'] = convention_file_path  # record the file path
+                item['file_size'] = os.path.getsize(convention_file_path)  # record the file size
+                item['status'] = 'downloaded'  # record the status
+                item['filename'] = convention_filename #record the filename
+                logging.info(f"DOWNLOADER: Downloaded {convention_file_path}")
                 
-                except TimeoutError: #if the request times out, log an error and move on to the next item.
-                    logging.error(f"DOWNLOADER: FAILED Request to Google Photos API for item {item['id']} timed out.") #test
+                if self.download_counter % self.progress_log_interval == 0:
+                    percent_complete = (self.download_counter / self.potential_job_size) * 100
+                    download_progress_timestamp = time.time()
+                    download_elapsed_time = download_progress_timestamp - download_start_timestamp
+                    download_rate = self.download_counter / download_elapsed_time
+                    logging.info(Fore.GREEN + f"Progress: {percent_complete:.2f}% complete" + Style.RESET_ALL)
+                    logging.info(Fore.CYAN + f"DOWNLOADER: Processed {self.download_counter} files out of {self.potential_job_size} files at {download_rate} files/sec." + Style.RESET_ALL)
+                    
+                break #if download is successful, break out of the retry loop and download the next item.
+            
+            except TimeoutError: #if the request times out, log an error and move on to the next item.
+                logging.error(f"DOWNLOADER: FAILED Request to Google Photos API for item {item['id']} timed out.") #test
+                self.download_counter += 1
+                continue #test
+            except requests.exceptions.RequestException as e: #if a request exception occurs, log an error and move on to the next item.
+                logging.error(f"DOWNLOADER: FAILED RequestException occurred while trying to get {image_url}: {e}")
+                logging.error(f"DOWNLOADER: Traceback: {traceback.format_exc()}")
+                self.download_counter += 1
+                time.sleep(1)
+            except (requests.exceptions.RequestException, ssl.SSLError) as e:
+                if attempt < self.MAX_RETRIES - 1:
+                    logging.error(f"DOWNLOADER: Error occurred while trying to get {image_url}: {e}. Retrying...")
+                    wait_time = (2 ** attempt) + random.random()  # Exponential backoff with jitter
+                    time.sleep(wait_time)
+                else:
+                    logging.error(f"DOWNLOADER: Failed to download {item['id']} after {self.MAX_RETRIES} attempts.")
+                    item['status'] = 'failed'
                     self.download_counter += 1
-                    continue #test
-                except requests.exceptions.RequestException as e: #if a request exception occurs, log an error and move on to the next item.
-                    logging.error(f"DOWNLOADER: FAILED RequestException occurred while trying to get {image_url}: {e}")
-                    logging.error(f"DOWNLOADER: Traceback: {traceback.format_exc()}")
-                    self.download_counter += 1
-                    time.sleep(1)
-                except (requests.exceptions.RequestException, ssl.SSLError) as e:
-                    if attempt < self.MAX_RETRIES - 1:
-                        logging.error(f"DOWNLOADER: Error occurred while trying to get {image_url}: {e}. Retrying...")
-                        wait_time = (2 ** attempt) + random.random()  # Exponential backoff with jitter
-                        time.sleep(wait_time)
-                    else:
-                        logging.error(f"DOWNLOADER: Failed to download {item['id']} after {self.MAX_RETRIES} attempts.")
-                        item['status'] = 'failed'
-                        self.download_counter += 1
-                        break
+                    break
 
     def download_photos(self, all_media_items): #this function downloads all photos and videos in the all_media_items list.
         logging.info(f"DOWNLOADER: Total index size: {len(all_media_items)}")
@@ -627,7 +631,7 @@ class GooglePhotosDownloader:
                 status_counts[status] += 1
 
         # Print the stats
-        logging.info(f"Total size: {total_size/1024/1024} bytes") #of downloaded or verified files.
+        logging.info(f"Total size: {total_size/1024/1024/1024} megabytes") #of downloaded or verified files.
         logging.info(f"Total file records: {total_files}")
         logging.info(f"Total image records: {total_images}")
         logging.info(f"Total video records: {total_videos}")
@@ -672,21 +676,36 @@ class GooglePhotosDownloader:
             except json.JSONDecodeError:
                 logging.info("There was an error decoding the JSON file. Please check the file format.")
 
-if __name__ == "__main__": #this is the main function that runs when the script is executed.
+if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(description='Google Photos Downloader')
-        parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')
-        parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
-        parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
-        parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
-        parser.add_argument('--fetch_only', action='store_true', help='Refresh the index by fetching a new one from the server')
-        parser.add_argument('--stats_only', action='store_true', help='Only report status of items in the index')
-        parser.add_argument('--download_missing', action='store_true', help='Download all missing items')
-        parser.add_argument('--auth', action='store_true', help='Perform OAuth re-authentication and refresh token')
-        parser.add_argument('--validate_only', action='store_true', help='Validate the index by checking all filepaths')
-        parser.add_argument('--scan_only', action='store_true', help='Scan the backup folder and update the index')
+        subparsers = parser.add_subparsers(dest='command')
+
+        # Sub-parser for fetch_only
+        fetch_parser = subparsers.add_parser('fetch_only', help='Refresh the index by fetching a new one from the server')
+        fetch_parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')
+        fetch_parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
+        fetch_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
+
+        # Sub-parser for download_missing
+        download_parser = subparsers.add_parser('download_missing', help='Download all missing items')
+        download_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
+        download_parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
+
+        # Sub-parser for stats_only, validate_only, scan_only, auth
+        for command in ['stats_only', 'validate_only', 'scan_only', 'auth']:
+            command_parser = subparsers.add_parser(command)
+            command_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
+        
+        # Sub-parser for run_all
+        run_all_parser = subparsers.add_parser('run_all', help='Run scan, fetch, download, validate, and report stats in sequence')
+        run_all_parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')
+        run_all_parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
+        run_all_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
+        run_all_parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
 
         args = parser.parse_args()
+
         log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
         logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -696,45 +715,61 @@ if __name__ == "__main__": #this is the main function that runs when the script 
         console_handler.setFormatter(formatter)
         logging.getLogger().addHandler(console_handler)
 
-        rate_limiter = TokenBucket(rate=1, capacity=20)  # You can adjust these numbers based on the rate limits 
-        #of the Google Photos API and the requirements of your application. For example, 
-        #if the API allows 10 requests per second and a maximum of 100 requests 
-        # per 10 seconds, you could set rate=10 and capacity=100.
+        rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
 
-        downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers) #creates a new instance of the GooglePhotosDownloader class.
-        
-        if args.auth:
-            # If --auth argument is provided, perform OAuth authentication
+        if args.command == 'auth':
+            downloader = GooglePhotosDownloader(args.backup_path)
             downloader.authenticate()
 
-        if args.stats_only:
+        elif args.command == 'stats_only':
+            downloader = GooglePhotosDownloader(args.backup_path)
             downloader.report_stats()
-            exit()
-        
-        if args.validate_only:
+
+        elif args.command == 'validate_only':
+            downloader = GooglePhotosDownloader(args.backup_path)
             downloader.validate_repository()
-            exit()
 
-        if args.scan_only:
+        elif args.command == 'scan_only':
+            downloader = GooglePhotosDownloader(args.backup_path)
             downloader.scandisk_and_get_filepaths_and_filenames()
-            exit()
 
-        if args.download_missing:
-            # Get the items not marked as 'verified' or 'downloaded'
+        elif args.command == 'download_missing':
+            downloader = GooglePhotosDownloader(args.backup_path, num_workers=args.num_workers)
             missing_media_items = {id: item for id, item in downloader.downloaded_items.items() if item.get('status') not in ['downloaded', 'verified']}
-            downloader.download_photos(missing_media_items)  # Download only missing photos and videos in the index.
-            exit()
-            
-        if args.fetch_only:
-            downloader.get_all_media_items() #get the index from the server for items in the date range.
-            exit()
+            downloader.download_photos(missing_media_items)
+            #save downloaded files to index
+            downloader.save_index_to_file(missing_media_items)
 
-        downloader.report_stats() #report the status of all items in the index.
+        elif args.command == 'fetch_only':
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path)
+            downloader.get_all_media_items()
+        
+        elif args.command == 'run_all':
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, num_workers=args.num_workers)
+            downloader.scandisk_and_get_filepaths_and_filenames()
+            downloader.get_all_media_items()
+            missing_media_items = {id: item for id, item in downloader.downloaded_items.items() if item.get('status') not in ['downloaded', 'verified']}
+            downloader.download_photos(missing_media_items)
+            downloader.save_index_to_file(missing_media_items)
+            downloader.validate_repository()
+            downloader.report_stats()
+
+        else:
+            downloader = GooglePhotosDownloader(args.backup_path)
+            downloader.report_stats()
 
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
-        traceback.print_exc()  # This will print the traceback
+        traceback.print_exc()
+
 
     #sample usage: 
-# python google_photos_downloader.py --start_date 2016-12-31 --end_date 2017-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 10 --download_missing
-# python google_photos_downloader.py --start_date 2020-03-31 --end_date 2020-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 1 --download_missing
+#python google_photos_downloader.py fetch_only --start_date 2023-01-01 --end_date 2023-12-31 --backup_path C:\users\alexw\onedrive\gphotos
+#python google_photos_downloader.py download_missing --backup_path C:\users\alexw\onedrive\gphotos --num_workers 5
+#python google_photos_downloader.py stats_only --backup_path C:\users\alexw\onedrive\gphotos
+#python google_photos_downloader.py validate_only --backup_path C:\users\alexw\onedrive\gphotos
+#python google_photos_downloader.py scan_only --backup_path C:\users\alexw\onedrive\gphotos
+#python google_photos_downloader.py auth --backup_path C:\users\alexw\onedrive\gphotos
+#python google_photos_downloader.py run_all --start_date 2023-01-01 --end_date 2023-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 5
+
+
