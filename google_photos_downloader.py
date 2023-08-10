@@ -171,6 +171,8 @@ class GooglePhotosDownloader:
         page_token = None
         indexing_start_time = time.time()  # Record the starting time
         items_processed = 0  # Initialize the items processed counter outside of the loop
+        # Initialize average_time_per_item outside the loop
+        average_time_per_item = 0
 
         while True: # Loop until there are no more pages
             
@@ -211,8 +213,7 @@ class GooglePhotosDownloader:
 
                 # Check if items_processed is zero         
                 if  items_processed == 0:
-                    average_time_per_item = 0
-                else:                    
+                  
                     average_time_per_item = items_processed / elapsed_indexing_time # Calculate average processing time per item
 
                     
@@ -467,7 +468,7 @@ class GooglePhotosDownloader:
         time.sleep(1.5)
 
     def download_image(self, item):
-        logging.info(f"DOWNLOADER: considering {item['filename']}...")
+        #logging.info(f"DOWNLOADER: considering {item['filename']}...")
         
         # Parse the creation time and convert to local time zone
         creation_time_local = convert_utc_to_local(parse(item['mediaMetadata']['creationTime']))
@@ -697,7 +698,7 @@ if __name__ == "__main__":
         # Sub-parser for run_all
         run_all_parser = subparsers.add_parser('run_all', help='Run scan, fetch, download, validate, and report stats in sequence')
         run_all_parser.add_argument('--start_date', type=str, default='1800-01-01', required=True, help='Start date in the format YYYY-MM-DD')
-        run_all_parser.add_argument('--end_date', type=str, default=datetime.now(timezone.utc).strftime('%Y-%m-%d'), required=True, help='End date in the format YYYY-MM-DD')#default end_date now
+        run_all_parser.add_argument('--end_date', type=str, default=datetime.now(timezone.utc).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
         run_all_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
         run_all_parser.add_argument('--num_workers', type=int, default=2, help='Number of worker threads for downloading images')
 
@@ -741,7 +742,6 @@ if __name__ == "__main__":
             downloader.get_all_media_items()
             missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)
-            downloader.save_index_to_file(missing_media_items)
             downloader.report_stats()
         
         elif args.command == 'run_all':
@@ -750,7 +750,6 @@ if __name__ == "__main__":
             downloader.get_all_media_items()
             missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)
-            downloader.save_index_to_file(missing_media_items)
             downloader.validate_repository()
             downloader.report_stats()
 

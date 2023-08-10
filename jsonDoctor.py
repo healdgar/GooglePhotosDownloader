@@ -197,7 +197,7 @@ def replace_values_gui():
     result_text.delete(1.0, tk.END)
     result_text.insert(tk.END, "Replacement completed.\n")
 
-def replace_values(data, key_path, pattern, replacement, selected_fields=[]):
+def replace_values(data, key_path, pattern, replacement, selected_fields=[]): #note, this will replace values at only 1 level.  YOu cannot replace the first level primary key yet.
     keys = key_path.split('.')  # Split the key path into individual keys
 
     try:
