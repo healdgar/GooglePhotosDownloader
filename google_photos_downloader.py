@@ -672,8 +672,11 @@ if __name__ == "__main__":
 
         # Sub-parser for download_missing
         download_parser = subparsers.add_parser('download_missing', help='Download all missing items')
+        download_parser.add_argument('--start_date', type=str, default='1800-01-01', required=False, help='Start date in the format YYYY-MM-DD')
+        download_parser.add_argument('--end_date', type=str, default=datetime.now(timezone.utc).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
         download_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
-        download_parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
+        download_parser.add_argument('--num_workers', type=int, default=2, required=False, help='Number of worker threads for downloading images')
+        
 
         # Sub-parser for stats_only, validate_only, scan_only, auth
         for command in ['stats_only', 'validate_only', 'scan_only', 'auth']:
@@ -718,7 +721,7 @@ if __name__ == "__main__":
             downloader.scandisk_and_get_filepaths_and_filenames()
 
         elif args.command == 'download_missing':
-            downloader = GooglePhotosDownloader(args.backup_path, num_workers=args.num_workers)
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
             downloader.load_index_from_file()
             missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)
@@ -728,7 +731,7 @@ if __name__ == "__main__":
             downloader.get_all_media_items()
 
         elif args.command == 'download':
-            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, num_workers=args.num_workers)
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
             downloader.load_index_from_file()
             downloader.get_all_media_items()
             missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
