@@ -463,6 +463,7 @@ class GooglePhotosDownloader:
         validator_end_time = time.time()
         self.validator_elapsed_time = validator_end_time - validator_start_time
         logging.info(f"VALIDATOR: Total time to validate repository: {self.validator_elapsed_time} seconds")
+        self.save_index_to_file(missing_files)
         time.sleep(1.5)
 
     def download_image(self, item):
@@ -682,6 +683,9 @@ if __name__ == "__main__":
         for command in ['stats_only', 'validate_only', 'scan_only', 'auth']:
             command_parser = subparsers.add_parser(command)
             command_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
+            command_parser.add_argument('--start_date', type=str, default='1800-01-01', required=False, help='Start date in the format YYYY-MM-DD')
+            command_parser.add_argument('--end_date', type=str, default=datetime.now(timezone.utc).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
+            command_parser.add_argument('--num_workers', type=int, default=2, required=False, help='Number of worker threads for downloading images')
         
         # Sub-parser for download
         run_all_parser = subparsers.add_parser('download', help='Fetch new items and download them and report stats in sequence')
@@ -713,7 +717,7 @@ if __name__ == "__main__":
             downloader.report_stats()
 
         elif args.command == 'validate_only':
-            downloader = GooglePhotosDownloader(args.backup_path)
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
             downloader.validate_repository()
 
         elif args.command == 'scan_only':
@@ -725,6 +729,7 @@ if __name__ == "__main__":
             downloader.load_index_from_file()
             missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)
+            downloader.save_index_to_file(missing_media_items)
 
         elif args.command == 'fetch_only':
             downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path)

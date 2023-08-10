@@ -11,6 +11,8 @@ data = {}
 reverse_sort_order = False
 selected_key = ''  # Variable to store the selected key
 selected_key_var = ''
+# Global variable to store the file path
+file_path = ''
 
 
 def load_json(file_path):
@@ -40,13 +42,30 @@ def display_keys():
         keys_listbox.insert(tk.END, key)
 
 
+
+
 def load_file():
+    global data, file_path
     file_path = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
-    global data
     data = load_json(file_path)
     display_keys()
     update_fields_listbox()  # Add this line
 
+def save_file():
+    global data, file_path
+    with open(file_path, 'w') as file:
+        json.dump(data, file)
+    result_text.delete(1.0, tk.END)
+    result_text.insert(tk.END, "Changes saved to file.\n")
+
+def save_file_as():
+    global data
+    new_file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
+    if new_file_path:  # Check if a file path was selected
+        with open(new_file_path, 'w') as file:
+            json.dump(data, file)
+        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, f"Changes saved to file: {new_file_path}\n")
 
 def update_selected_key():
     global selected_key
@@ -169,14 +188,60 @@ def search_values(data, key_path, pattern, selected_fields=[]):
 
     return matching_values
 
+def replace_values_gui():
+    key = selected_key_var.get()  # Use the value of the StringVar
+    selected_fields = [fields_listbox.get(idx) for idx in fields_listbox.curselection()]
+    pattern = pattern_entry.get()
+    replacement = replace_entry.get()  # Get the replacement text
+    replace_values(data, key, pattern, replacement, selected_fields)
+    result_text.delete(1.0, tk.END)
+    result_text.insert(tk.END, "Replacement completed.\n")
+
+def replace_values(data, key_path, pattern, replacement, selected_fields=[]):
+    keys = key_path.split('.')  # Split the key path into individual keys
+
+    try:
+        regex = re.compile(pattern)
+    except re.error:
+        print(f"Invalid regex pattern: {pattern}")
+        return
+
+    for item_id, item in data.items():
+        value = item
+        try:
+            for key in keys:
+                if isinstance(value, list):  # Handle list indices in key path
+                    index = int(key[1:-1])  # Extract index from key (e.g., "[0]" -> 0)
+                    value = value[index]
+                else:
+                    value = value[key]  # Navigate through the nested structure
+            if isinstance(value, dict):  # Skip if the value is a dictionary
+                continue
+            if regex.search(str(value)):
+                new_value = regex.sub(replacement, str(value))  # Perform the replacement
+                # Update the value in the data (you'll need to navigate to the value again)
+                sub_data = item
+                for sub_key in keys[:-1]:
+                    if isinstance(sub_data, list):
+                        index = int(sub_key[1:-1])
+                        sub_data = sub_data[index]
+                    else:
+                        sub_data = sub_data[sub_key]
+                final_key = keys[-1]
+                if isinstance(sub_data, list):
+                    index = int(final_key[1:-1])
+                    sub_data[index] = new_value
+                else:
+                    sub_data[final_key] = new_value
+        except (KeyError, IndexError, ValueError):
+            pass  # Skip if the key or index is not found
 
 
 
 root = tk.Tk()
-root.title("JSON Explorer")
+root.title("JSON Doctor")
 selected_key_var = tk.StringVar()  # StringVar to store the selected key
 selected_key_var.set(selected_key)  # Initialize the StringVar with the temporary variable
-
 
 load_button = tk.Button(root, text="Load JSON File", command=load_file)
 load_button.pack(fill=tk.X)
@@ -185,11 +250,15 @@ keys_listbox = tk.Listbox(root)
 keys_listbox.bind('<<ListboxSelect>>', lambda event: update_selected_key())
 keys_listbox.pack(fill=tk.X)
 
-tally_button = tk.Button(root, text="Tally Values", command=tally_values_gui)
-tally_button.pack(fill=tk.X)
+# Frame to hold the tally and reverse sort buttons
+tally_frame = tk.Frame(root)
+tally_frame.pack(fill=tk.X)
 
-reverse_sort_button = tk.Button(root, text="Reverse Sort Order", command=toggle_sort_order)
-reverse_sort_button.pack(fill=tk.X)
+tally_button = tk.Button(tally_frame, text="Tally Values", command=tally_values_gui)
+tally_button.pack(side=tk.LEFT)
+
+reverse_sort_button = tk.Button(tally_frame, text="Reverse Sort Order", command=toggle_sort_order)
+reverse_sort_button.pack(side=tk.LEFT)
 
 pattern_label = tk.Label(root, text="Regex Pattern:")
 pattern_label.pack(fill=tk.X)
@@ -206,7 +275,26 @@ fields_listbox_label.pack(fill=tk.X)
 fields_listbox = tk.Listbox(root, selectmode=tk.MULTIPLE)
 fields_listbox.pack(fill=tk.X)
 
+replace_label = tk.Label(root, text="Replace With:")
+replace_label.pack(fill=tk.X)
+replace_entry = tk.Entry(root)
+replace_entry.pack(fill=tk.X)
+
+replace_button = tk.Button(root, text="Replace by Regex", command=replace_values_gui)
+replace_button.pack(fill=tk.X)
+
+# Frame to hold the save and save as buttons
+save_frame = tk.Frame(root)
+save_frame.pack(fill=tk.X)
+
+save_button = tk.Button(save_frame, text="Save Changes", command=save_file)
+save_button.pack(side=tk.LEFT)
+
+save_as_button = tk.Button(save_frame, text="Save As", command=save_file_as)
+save_as_button.pack(side=tk.LEFT)
+
 result_text = tk.Text(root, wrap=tk.WORD)
 result_text.pack(fill=tk.BOTH, expand=1)
 
 root.mainloop()
+

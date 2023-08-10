@@ -25,34 +25,29 @@ def run_command():
     start_date = start_date_entry.get()
     end_date = end_date_entry.get()
     num_workers_str = num_workers_entry.get()
+    num_workers = int(num_workers_str) if num_workers_str else 2
 
-    # Check if num_workers is empty and set a default value if needed
-    num_workers = int(num_workers_str) if num_workers_str else 2  # You can set the default value as needed
-
-    # Create an instance of your downloader class
-    #downloader = GooglePhotosDownloader(start_date, end_date, backup_path, num_workers=num_workers)
-
-    # Run the selected command
-    if command == 'auth':
-        downloader = GooglePhotosDownloader(backup_path)
-        downloader.authenticate()
-    elif command == 'stats_only':
-        downloader = GooglePhotosDownloader(backup_path)
-        downloader.report_stats()
-    elif command == 'validate_only':
-        downloader = GooglePhotosDownloader(backup_path)
-        downloader.validate_repository()
-    elif command == 'scan_only':
-        downloader = GooglePhotosDownloader(backup_path)
-        downloader.scandisk_and_get_filepaths_and_filenames()
-    elif command == 'download_missing':
-        downloader = GooglePhotosDownloader(backup_path, num_workers)
+    if command == 'download_missing':
+        downloader = GooglePhotosDownloader(start_date, end_date, backup_path, num_workers)
         downloader.load_index_from_file()
         missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
         downloader.download_photos(missing_media_items)
     elif command == 'fetch_only':
         downloader = GooglePhotosDownloader(start_date, end_date, backup_path)
         downloader.get_all_media_items()
+    elif command == 'auth':
+        downloader = GooglePhotosDownloader(backup_path)
+        downloader.authenticate()
+    elif command == 'stats_only':
+        downloader = GooglePhotosDownloader(backup_path)
+        downloader.report_stats()
+    elif command == 'validate_only':
+        downloader = GooglePhotosDownloader(start_date, end_date, backup_path, num_workers)
+        downloader.validate_repository()
+    elif command == 'scan_only':
+        downloader = GooglePhotosDownloader(backup_path)
+        downloader.scandisk_and_get_filepaths_and_filenames()
+
     # Add other commands here...
 
 def select_backup_path():
