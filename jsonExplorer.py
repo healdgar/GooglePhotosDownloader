@@ -17,6 +17,7 @@ def load_file():
     display_keys()
 
 
+
 def tally_values_gui():
     global reverse_sort_order
     selected_key = keys_listbox.get(keys_listbox.curselection())
@@ -28,6 +29,8 @@ def tally_values_gui():
     for value, count in value_tally_result.items():
         result_text.insert(tk.END, f"  Value: {value} - Count: {count}\n")
 
+
+
 def toggle_sort_order():
     global reverse_sort_order
     reverse_sort_order = not reverse_sort_order
@@ -36,14 +39,14 @@ def toggle_sort_order():
 
 def search_values_gui():
     selected_key = keys_listbox.get(keys_listbox.curselection())
+    selected_fields = [fields_listbox.get(idx) for idx in fields_listbox.curselection()]
     pattern = pattern_entry.get()
-    matching_values = search_values(data, selected_key, pattern)
+    matching_values = search_values(data, selected_key, pattern, selected_fields)
     result_text.delete(1.0, tk.END)
     result_text.insert(tk.END, f"Found {len(matching_values)} matching values:\n")
-    for item_id, file_path, value in matching_values:
-        result_text.insert(tk.END, f"  - File: {file_path} - Value: {value}\n")
-
-
+    for item_id, file_path, value, extra_fields in matching_values:
+        extra_info = ' - '.join([f"{field}: {item[field]}" for field in extra_fields if field in item])
+        result_text.insert(tk.END, f"  - File: {file_path} - Value: {value} - {extra_info}\n")
 
 
 def load_json(file_path):
@@ -75,7 +78,7 @@ def tally_values(data, key_path):
 
 
 
-def search_values(data, key_path, pattern):
+def search_values(data, key_path, pattern, selected_fields=[]):
     matching_values = []
     keys = key_path.split('.')  # Split the key path into individual keys
 
@@ -97,14 +100,36 @@ def search_values(data, key_path, pattern):
             if isinstance(value, dict):  # Skip if the value is a dictionary
                 continue
             if regex.search(str(value)):
-                matching_values.append((item_id, item.get('file_path', 'N/A'), value))
+                extra_fields = {field: item.get(field, 'N/A') for field in selected_fields}
+                matching_values.append((item_id, item.get('file_path', 'N/A'), value, extra_fields))
         except (KeyError, IndexError, ValueError):
             pass  # Skip if the key or index is not found
 
     return matching_values
 
+def update_fields_listbox():
+    fields_listbox.delete(0, tk.END)
+    selected_key = keys_listbox.get(keys_listbox.curselection())
+    keys = selected_key.split('.')  # Split the key path into individual keys
 
+    unique_fields = set()
 
+    for item_id, item in data.items():
+        sub_data = item
+        try:
+            for key in keys:
+                if isinstance(sub_data, list):  # Handle list indices in key path
+                    index = int(key[1:-1])  # Extract index from key (e.g., "[0]" -> 0)
+                    sub_data = sub_data[index]
+                else:
+                    sub_data = sub_data[key]  # Navigate through the nested structure
+            if isinstance(sub_data, dict):  # If the value is a dictionary, collect fields
+                unique_fields.update(sub_data.keys())
+        except (KeyError, IndexError, ValueError):
+            pass  # Skip if the key or index is not found
+
+    for field in sorted(unique_fields):
+        fields_listbox.insert(tk.END, field)
 
 def collect_keys(data, path='', keys=set()):
     if isinstance(data, dict):
@@ -134,7 +159,9 @@ load_button = tk.Button(root, text="Load JSON File", command=load_file)
 load_button.pack(fill=tk.X)
 
 keys_listbox = tk.Listbox(root)
+keys_listbox.bind('<<ListboxSelect>>', lambda event: update_fields_listbox())
 keys_listbox.pack(fill=tk.X)
+
 
 tally_button = tk.Button(root, text="Tally Values", command=tally_values_gui)
 tally_button.pack(fill=tk.X)
@@ -150,6 +177,12 @@ pattern_entry.pack(fill=tk.X)
 
 search_button = tk.Button(root, text="Search by Regex", command=search_values_gui)
 search_button.pack(fill=tk.X)
+
+fields_listbox_label = tk.Label(root, text="Select Fields to Display:")
+fields_listbox_label.pack(fill=tk.X)
+
+fields_listbox = tk.Listbox(root, selectmode=tk.MULTIPLE)
+fields_listbox.pack(fill=tk.X)
 
 result_text = tk.Text(root, wrap=tk.WORD)
 result_text.pack(fill=tk.BOTH, expand=1)

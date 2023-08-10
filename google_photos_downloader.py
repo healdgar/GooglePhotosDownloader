@@ -59,10 +59,10 @@ class TokenBucket: #this class is used to limit the rate of requests to the Goog
 class GooglePhotosDownloader:
     SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
 
-    def __init__(self, backup_path, start_date=None, end_date=None, num_workers=5, checkpoint_interval=25, auth_code=None):
+    def __init__(self, start_date, end_date, backup_path, num_workers=5, checkpoint_interval=25, auth_code=None):
 
-        self.start_date = start_date
-        self.end_date = end_date
+        self.start_date = start_date if start_date else '1800-01-01'
+        self.end_date = end_date if end_date else datetime.now(timezone.utc).strftime('%Y-%m-%d')
         self.backup_path = backup_path
         self.num_workers = num_workers
         self.downloaded_count = 0
@@ -131,11 +131,13 @@ class GooglePhotosDownloader:
 
 
     def get_all_media_items(self): #This method is used to fetch all media items from the Google Photos API
+        print(f"Start Date: {self.start_date}")
+        print(f"End Date: {self.end_date}")
+        print(f"Backup Path: {self.backup_path}")
         #and store them in a dictionary.
         fetcher_start_time = time.time()  # Record the starting time    
         # Load existing media items in order to avoid re-downloading them 
 
-        self.all_media_items = self.downloaded_items 
         # Convert the start and end dates to UTC because the API requires UTC (removing for test) 
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1)
@@ -678,6 +680,13 @@ if __name__ == "__main__":
             command_parser = subparsers.add_parser(command)
             command_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
         
+        # Sub-parser for download
+        run_all_parser = subparsers.add_parser('download', help='Fetch new items and download them and report stats in sequence')
+        run_all_parser.add_argument('--start_date', type=str, default='1800-01-01', required=False, help='Start date in the format YYYY-MM-DD')
+        run_all_parser.add_argument('--end_date', type=str, default=datetime.now(timezone.utc).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
+        run_all_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
+        run_all_parser.add_argument('--num_workers', type=int, default=2, required=False, help='Number of worker threads for downloading images')
+        
         # Sub-parser for run_all
         run_all_parser = subparsers.add_parser('run_all', help='Run scan, fetch, download, validate, and report stats in sequence')
         run_all_parser.add_argument('--start_date', type=str, default='1800-01-01', required=True, help='Start date in the format YYYY-MM-DD')
@@ -717,12 +726,21 @@ if __name__ == "__main__":
         elif args.command == 'fetch_only':
             downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path)
             downloader.get_all_media_items()
+
+        elif args.command == 'download':
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, num_workers=args.num_workers)
+            downloader.load_index_from_file()
+            downloader.get_all_media_items()
+            missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
+            downloader.download_photos(missing_media_items)
+            downloader.save_index_to_file(missing_media_items)
+            downloader.report_stats()
         
         elif args.command == 'run_all':
             downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, num_workers=args.num_workers)
             downloader.scandisk_and_get_filepaths_and_filenames()
             downloader.get_all_media_items()
-            missing_media_items = {id: item for id, item in downloader.downloaded_items.items() if item.get('status') not in ['downloaded', 'verified']}
+            missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)
             downloader.save_index_to_file(missing_media_items)
             downloader.validate_repository()
@@ -745,5 +763,5 @@ if __name__ == "__main__":
 #python google_photos_downloader.py scan_only --backup_path C:\users\alexw\onedrive\gphotos
 #python google_photos_downloader.py auth --backup_path C:\users\alexw\onedrive\gphotos
 #python google_photos_downloader.py run_all --start_date 2023-01-01 --end_date 2023-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 5
-
+#python google_photos_downloader.py download --backup_path c:\users\alexw\onedrive\gphotos --num_workers 1
 
