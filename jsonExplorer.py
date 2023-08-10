@@ -157,8 +157,7 @@ result_text.pack(fill=tk.BOTH, expand=1)
 root.mainloop()
 
 
-if __name__ == "__main__":
-    main()
+
 
 #    C:\Users\alexw\OneDrive\gphotos\DownloadItems.json
 

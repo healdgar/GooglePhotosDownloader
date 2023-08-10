@@ -76,13 +76,23 @@ class GooglePhotosDownloader:
         self.downloaded_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
         self.download_counter = 0
         self.progress_log_interval = 25
-
+        self.all_media_items = {}  # Initialize all_media_items as an empty dictionary
+        """
         if os.path.exists(self.downloaded_items_path):
             with open(self.downloaded_items_path, 'r') as f:
                 self.downloaded_items = json.load(f)
         else:
             self.downloaded_items = []
+        """
+        
 
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(console_handler)
+        
+        
         self.session = requests.Session()
 
         creds = None
@@ -107,7 +117,7 @@ class GooglePhotosDownloader:
         logging.info("Connected to Google server.")
 
         self.checkpoint_interval = checkpoint_interval #unused, for later implementation of a periodic save to file in case of interrupted downloads.
-        self.all_media_items = {}  # Initialize all_media_items as an empty dictionary
+        
 
     def authenticate(self):
         """Perform the OAuth authentication using the provided auth_code."""
@@ -636,13 +646,14 @@ class GooglePhotosDownloader:
             logging.error(f"INDEX UPDATER: No write access to the file: {self.downloaded_items_path}")  
 
     def load_index_from_file(self): #to implement throughout.
-        all_media_items_path = os.path.normpath(os.path.join(args.backup_path, 'DownloadItems.json'))
+
+        all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
         if os.path.exists(all_media_items_path):
             self.all_media_items = {}
             try:
                 with open(all_media_items_path, 'r') as f:
                     self.all_media_items = json.load(f)
-                print(f"Loaded {len(self.all_media_items)} existing media items from file.")
+                logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
             except json.JSONDecodeError:
                 logging.info("There was an error decoding the JSON file. Please check the file format.")
 
@@ -679,12 +690,6 @@ if __name__ == "__main__":
         log_filename = os.path.join(args.backup_path, 'google_photos_downloader.log')
         logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(formatter)
-        logging.getLogger().addHandler(console_handler)
-
         rate_limiter = TokenBucket(rate=1, capacity=2)  # You can adjust these numbers based on the rate limits 
 
         if args.command == 'auth':
@@ -705,7 +710,8 @@ if __name__ == "__main__":
 
         elif args.command == 'download_missing':
             downloader = GooglePhotosDownloader(args.backup_path, num_workers=args.num_workers)
-            missing_media_items = {id: item for id, item in downloader.downloaded_items.items() if item.get('status') not in ['downloaded', 'verified']}
+            downloader.load_index_from_file()
+            missing_media_items = {id: item for id, item in downloader.all_media_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)
 
         elif args.command == 'fetch_only':
