@@ -75,7 +75,7 @@ class GooglePhotosDownloader:
         self.MAX_RETRIES = 3  # Maximum number of retries for a download attempt       
         self.downloaded_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
         self.download_counter = 0
-        self.progress_log_interval = 10
+        self.progress_log_interval = 25
 
         if os.path.exists(self.downloaded_items_path):
             with open(self.downloaded_items_path, 'r') as f:
@@ -245,6 +245,12 @@ class GooglePhotosDownloader:
             
         #loop through all items in the index and update the file path and status.  Possibly move to a separate method called update_index.
         logging.info(f"SCANNER: Number of items loaded to all_media_items for get all filepaths: {len(self.all_media_items)}")
+        logging.info(f"SCANNER: Scanning repository...")
+        verified_count = 0
+        moved_count = 0
+        renamed_count = 0
+        filepath_added_count = 0
+
         for item in self.all_media_items.values():
             # Parse the creation time and convert to local time zone
             creation_time = parse(item['mediaMetadata']['creationTime']).astimezone(pytz.utc).replace(tzinfo=None)
@@ -256,14 +262,16 @@ class GooglePhotosDownloader:
             # Combine everything to get the full file path
             convention_filename = convention_filename.replace('\\', '-').replace('/', '-')
             convention_filepath = os.path.normpath(os.path.join(self.backup_path, subdirectory, convention_filename))
+
             
             if convention_filepath in filepaths_and_filenames: #update the filepath in the index if it exists in the dictionary.
-                item['file_path'] = convention_filepath
+                item['file_path'] = convention_filepath #add file repository metadata to the index.
                 item['file_size'] = os.path.getsize(convention_filepath)
                 item['filename'] = convention_filename
                 item['status'] = 'verified' #mark the item as verified if the file exists.
-                logging.info(f"SCANNER: File {convention_filepath} verified")
-
+                verified_count =+ 1   
+                          
+                
             if item['filename'] in filepaths_and_filenames.values():
                 #possibly should be a separate method called organize_files.  This is the main loop to organize files.
                 current_filepaths = [path for path, name in filepaths_and_filenames.items() if name == convention_filename] #get a list of all filepaths with the same filename.
@@ -282,6 +290,7 @@ class GooglePhotosDownloader:
                             item['status'] = 'verified'
                             filepaths_and_filenames[convention_filepath] = item['filename']
                             del filepaths_and_filenames[current_filepath]
+                            moved_count += 1
                             
                         else:
                             # If a file already exists at the convention_filepath, check if it is the correct file
@@ -306,9 +315,11 @@ class GooglePhotosDownloader:
                         item['filename'] = convention_filename
                         filepaths_and_filenames[convention_filepath] = convention_filename
                         item['status'] = 'verified' #mark the item as verified if the file exists.
+                        renamed_count += 1
                 else:
                     item['status'] = 'missing'
                     logging.info(f"SCANNER: File {item['filename']} is missing")
+                    missing_count =+ 1
 
                 #third subloop to loop to look for items in the index that only have source filename,
                 #and add any missing file_path or file_size or status values to the index.
@@ -318,6 +329,7 @@ class GooglePhotosDownloader:
                     logging.info(f"SCANNER: File {convention_filepath} exists, adding file_path to index.")
                     item['file_size'] = os.path.getsize(convention_filepath)
                     item['file_path'] = convention_filepath
+                    filepath_added_count += 1
                     #update filename to convention_filename if it doesn't match.
                     if item['filename'] != convention_filename:
                         logging.info(f"SCANNER: Filename {item['filename']} does not match the convention. Renaming filename and adding status and filename to index.")
@@ -330,17 +342,16 @@ class GooglePhotosDownloader:
                         item['filename'] = convention_filename
                         item['status'] = 'verified'  
                         filepaths_and_filenames[convention_filepath] = convention_filename                            
-
+            logging.info(f"SCANNER: #{verified_count} File {convention_filepath} verified")
         scanner_end_time = time.time()
-        verified_count = len([item for item in self.all_media_items.values() if item['status'] == 'verified'])
-        missing_count = len([item for item in self.all_media_items.values() if item['status'] == 'missing'])
-        logging.info(f"SCANNER: Verified {verified_count} files and found {missing_count} missing files.")
+        
+        logging.info(f"SCANNER: Verified {verified_count} files.")
+                      #and found {missing_count or 0} missing files.  Renamed {renamed_count or 0} files and moved {moved_count or 0} files.  Added filepaths to {filepath_added_count or 0} files.")
         self.scanner_elapsed_time = scanner_end_time - scanner_start_time
         logging.info(f"SCANNER: Validator completed processing in {scanner_end_time - scanner_start_time} seconds.")
         time.sleep(1.5)
         self.save_index_to_file(self.all_media_items)
         return filepaths_and_filenames
-
 
     def validate_repository(self): #this method is used to validate the repository by checking the index against the actual files in the repository.
         validator_start_time = time.time()
@@ -444,24 +455,10 @@ class GooglePhotosDownloader:
 
     def download_image(self, item):
         logging.info(f"DOWNLOADER: considering {item['filename']}...")
-        download_start_timestamp = time.time()  # Record the starting time
-
+        
         # Parse the creation time and convert to local time zone
         creation_time_local = convert_utc_to_local(parse(item['mediaMetadata']['creationTime']))
-        # Convert the download filter start and end dates to local time zone
-        # start_datetime_local = convert_utc_to_local(datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzutc()))
-        # end_datetime_local = convert_utc_to_local(datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzutc()) + timedelta(days=1, seconds=-1))
-        
-        # Compare creation_time_local with start_datetime_local and end_datetime_local
-        is_status_downloaded = item.get('status', '') == 'downloaded'
-        is_status_verified = item.get('status', '') == 'verified'
-        #is_already_at_path = item.get('file_path', '') == os.path.normpath(os.path.join(self.backup_path, item['filename']))
 
-        #if is_status_downloaded or is_status_verified or is_already_at_path: # or is_before_start_date or is_after_end_date: -- removed for test
-        #    return
-
-        file_path = item.get('file_path')
-        logging.info(f"File path from index: {file_path}")
         # Get the correct creation year from the 'creationTime' metadata
         creation_time_year = convert_utc_to_local(parse(item['mediaMetadata']['creationTime'])).year
         # Update the subdirectory to use the correct creation year
@@ -472,33 +469,6 @@ class GooglePhotosDownloader:
         convention_filename = convention_filename.replace('\\', '-').replace('/', '-') #avoid slashes in filenames
         convention_file_path = os.path.normpath(os.path.join(self.backup_path, subdirectory, convention_filename))
         
-        """  REMOVING INDEX UPDATING TASKS
-        # if the file exists at either the original or the convention path, check if the filename matches the convention.
-        if file_path is not None and os.path.exists(file_path):
-            # if the filename doesn't match the convention, rename the file, update the path, and mark it verified, and do not download it.
-            # This validation is necessary because the index fetch filter may not align with the local time zone of the scan folder.
-            # This validation might belong in the scanner method, but the redundancy makes it robust.
-            if item['filename'] != convention_filename:
-                logging.info(f"Filename {item['filename']} does not match the convention. Renaming...")                
-                # Determine the current file path
-                current_file_path = file_path if os.path.exists(file_path) else convention_file_path
-                # Rename the file
-                os.rename(current_file_path, convention_file_path)
-
-                # Update path and mark it verified
-                item['filename'] = convention_filename
-                item['file_path'] = convention_file_path
-                item['file_size'] = os.path.getsize(convention_file_path)
-                item['status'] = 'verified'
-                logging.info(f"File {current_file_path} updated to {convention_file_path} and verified")
-                return
-
-            #If the filename exists at the convention path (according to the index), mark it verified and do not download it.
-            if item['file_path'] == convention_file_path:
-                item['status'] = 'verified'
-                logging.info(f"File {convention_file_path} already exists, verified")        
-                return 
-            SEPARATION OF CONCERNS"""
         # If the file cannot be found at either file_path, download it.
         
         
@@ -508,27 +478,21 @@ class GooglePhotosDownloader:
             while not rate_limiter.consume(): #if the rate limiter is not ready, wait for a short time and try again.
                 time.sleep(0.1)  # Wait for a short time if no tokens are available
             try:                
-                logging.info(f"DOWNLOADER: About to make request to Google Photos API for item {item['filename']}...")
                 image = self.photos_api.mediaItems().get(mediaItemId=item['id']).execute()
                 #logging.info(f"DOWNLOADER: Response from Google Photos API: {image}")
-                logging.info("DOWNLOADER: Request to Google Photos API completed.")
 
                 if 'video' in item['mimeType']:  # Check if 'video' is in mimeType. need to account for motion photos and other media types.
                     image_url = image['baseUrl'] + '=dv' #motion videos also dowlnoad as =dv. Stil testing.
-                    logging.info(f"DOWNLOADER: Video URLfound")
                 if 'image' in item['mimeType']:
                     image_url = image['baseUrl'] + '=d'
-                    logging.info(f"DOWNLOADER: Image URLfound")
                 else:
                     image_url = image['baseUrl'] + '=d'
-                    logging.info(f"DOWNLOADER: Other media type URL found... confirm dwonload.")
 
                 logging.info(f"DOWNLOADER: Attempting to download {convention_file_path}...")  # Log a message before the download attempt
                 response = session.get(image_url, stream=True)
                 logging.info(f"DOWNLOADER: Download attempt finished. Status code: {response.status_code}")  # Log a message after the download attempt
                 self.download_counter += 1
                 # Log the status code and headers
-                logging.info(f"DOWNLOADER: Response status code: {response.status_code}")
                 logging.info(f"DOWNLOADER: Response headers: {response.headers}")
                 os.makedirs(os.path.dirname(convention_file_path), exist_ok=True)
                 with open(convention_file_path, "wb") as f: 
@@ -543,11 +507,14 @@ class GooglePhotosDownloader:
                 if self.download_counter % self.progress_log_interval == 0:
                     percent_complete = (self.download_counter / self.potential_job_size) * 100
                     download_progress_timestamp = time.time()
-                    download_elapsed_time = download_progress_timestamp - download_start_timestamp
+                    download_elapsed_time = download_progress_timestamp - self.download_start_timestamp
                     download_rate = self.download_counter / download_elapsed_time
-                    logging.info(Fore.GREEN + f"Progress: {percent_complete:.2f}% complete" + Style.RESET_ALL)
+                    download_ETR = (self.potential_job_size - self.download_counter) / download_rate
+                    logging.info(Fore.GREEN + f"Progress: {percent_complete:.2f}% complete. ETR {download_ETR/60} minutes" + Style.RESET_ALL)
                     logging.info(Fore.CYAN + f"DOWNLOADER: Processed {self.download_counter} files out of {self.potential_job_size} files at {download_rate} files/sec." + Style.RESET_ALL)
-                    
+                    # Save the index to file after every progress_log_interval downloads
+                    self.save_index_to_file(self.all_media_items)
+
                 break #if download is successful, break out of the retry loop and download the next item.
             
             except TimeoutError: #if the request times out, log an error and move on to the next item.
@@ -570,7 +537,9 @@ class GooglePhotosDownloader:
                     self.download_counter += 1
                     break
 
+
     def download_photos(self, all_media_items): #this function downloads all photos and videos in the all_media_items list.
+        self.download_start_timestamp = time.time()  # Record the starting time
         logging.info(f"DOWNLOADER: Total index size: {len(all_media_items)}")
         self.potential_job_size = len([item for item in all_media_items.values() if item.get('status') not in ['downloaded', 'verified']])
         downloader_start_time = time.time()
@@ -584,12 +553,13 @@ class GooglePhotosDownloader:
             logging.error(f"DOWNLOADER: An unexpected error occurred in download_photos: {e}")
         finally:
             logging.info(f"DOWNLOADER: All items processed, performing final checkpoint...")
+            self.save_index_to_file(all_media_items)
             downloader_end_time = time.time()
             self.downloader_elapsed_time = downloader_end_time - downloader_start_time
             logging.info(f"DOWNLOADER: Total time to download photos: {downloader_end_time - downloader_start_time} seconds")
             logging.info(f"DOWNLOADER: Download rate: {self.potential_job_size / (downloader_end_time - downloader_start_time)} files per second")
             logging.info(f"DOWNLOADER: Rate limiter stats: {rate_limiter}")
-            self.save_index_to_file(all_media_items)
+            
 
     def report_stats(self): #this function reports the status of all items in the index.
         # Initialize counters
@@ -683,8 +653,8 @@ if __name__ == "__main__":
 
         # Sub-parser for fetch_only
         fetch_parser = subparsers.add_parser('fetch_only', help='Refresh the index by fetching a new one from the server')
-        fetch_parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')
-        fetch_parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
+        fetch_parser.add_argument('--start_date', type=str, default='1800-01-01', required=True, help='Start date in the format YYYY-MM-DD')
+        fetch_parser.add_argument('--end_date', type=str, default=datetime.now(timezone.utc).strftime('%Y-%m-%d'), required=True, help='End date in the format YYYY-MM-DD')#default end_date now
         fetch_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
 
         # Sub-parser for download_missing
@@ -699,10 +669,10 @@ if __name__ == "__main__":
         
         # Sub-parser for run_all
         run_all_parser = subparsers.add_parser('run_all', help='Run scan, fetch, download, validate, and report stats in sequence')
-        run_all_parser.add_argument('--start_date', type=str, required=True, help='Start date in the format YYYY-MM-DD')
-        run_all_parser.add_argument('--end_date', type=str, required=True, help='End date in the format YYYY-MM-DD')
+        run_all_parser.add_argument('--start_date', type=str, default='1800-01-01', required=True, help='Start date in the format YYYY-MM-DD')
+        run_all_parser.add_argument('--end_date', type=str, default=datetime.now(timezone.utc).strftime('%Y-%m-%d'), required=True, help='End date in the format YYYY-MM-DD')#default end_date now
         run_all_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
-        run_all_parser.add_argument('--num_workers', type=int, default=5, help='Number of worker threads for downloading images')
+        run_all_parser.add_argument('--num_workers', type=int, default=2, help='Number of worker threads for downloading images')
 
         args = parser.parse_args()
 
@@ -737,8 +707,6 @@ if __name__ == "__main__":
             downloader = GooglePhotosDownloader(args.backup_path, num_workers=args.num_workers)
             missing_media_items = {id: item for id, item in downloader.downloaded_items.items() if item.get('status') not in ['downloaded', 'verified']}
             downloader.download_photos(missing_media_items)
-            #save downloaded files to index
-            downloader.save_index_to_file(missing_media_items)
 
         elif args.command == 'fetch_only':
             downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path)
