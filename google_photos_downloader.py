@@ -77,6 +77,8 @@ class GooglePhotosDownloader:
         self.download_counter = 0
         self.progress_log_interval = 25
         self.all_media_items = {}  # Initialize all_media_items as an empty dictionary
+        self.script_dir = os.path.dirname(os.path.abspath(__file__))  
+
         """
         if os.path.exists(self.downloaded_items_path):
             with open(self.downloaded_items_path, 'r') as f:
@@ -96,18 +98,21 @@ class GooglePhotosDownloader:
         self.session = requests.Session()
 
         creds = None
-        token_path = 'token.pickle'
 
-       
+        token_path = os.path.join(self.script_dir, 'token.pickle')
+               
         if os.path.exists(token_path):
             with open(token_path, 'rb') as token_file:
                 creds = pickle.load(token_file)
         
+        client_secrets = os.path.join(self.script_dir, 'client_secrets.json')
+
+
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                flow = InstalledAppFlow.from_client_secrets_file('client_secrets.json', self.SCOPES)
+                flow = InstalledAppFlow.from_client_secrets_file(client_secrets, self.SCOPES)
                 creds = flow.run_local_server(port=0)
             
             with open(token_path, 'wb') as token_file:
@@ -142,10 +147,6 @@ class GooglePhotosDownloader:
         # Ensure end date includes the last second of the date 
         start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d").replace(tzinfo=tzlocal())
         end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d").replace(tzinfo=tzlocal()) + timedelta(days=1, seconds=-1)
-
-        #start_datetime = datetime.strptime(self.start_date, "%Y-%m-%d")
-        #end_datetime = datetime.strptime(self.end_date, "%Y-%m-%d") + timedelta(days=1, seconds=-1)
-
 
         # Filter out any items that are outside the date range
         self.all_media_items = {
@@ -200,9 +201,14 @@ class GooglePhotosDownloader:
                 if item['id'] not in self.all_media_items: #if the item is not already in the index, add it.
                     convention_filename = self.append_id_to_string(item['filename'], item['id'])
                     convention_filename = convention_filename.replace('\\', '-').replace('/', '-') #avoid slashes in filenames
-                    # If the filename doesn't exist in the scan results, mark it as 'not downloaded'
-                    item['status'] = 'fetched' #fetched but not verified by scan.
+                    # If the filename doesn't exist in the scan results, mark it as 'fetched'
+                    item['status'] = 'fetched' #fetched but not verified by scan.        
+                    # Record the UTC time of the item fetch
+                    item['date_fetched'] = datetime.utcnow().isoformat()
+                    # Remove the 'baseURL' key if it exists
+                    item.pop('baseURL', None) # Removes the 'baseURL' key if it exists, does nothing if it doesn't
                     self.all_media_items[item['id']] = item #add the item to the index.
+                
 
             page_token = results.get('nextPageToken')
             if not page_token:
@@ -524,6 +530,7 @@ class GooglePhotosDownloader:
                 item['file_size'] = os.path.getsize(convention_file_path)  # record the file size
                 item['status'] = 'downloaded'  # record the status
                 item['filename'] = convention_filename #record the filename
+                item['date_downloaded'] = datetime.utcnow().isoformat() #record the timestamp of download
                 logging.info(f"DOWNLOADER: Downloaded {convention_file_path}")
                 
                 if self.download_counter % self.progress_log_interval == 0:
@@ -623,7 +630,7 @@ class GooglePhotosDownloader:
                 status_counts[status] += 1
 
         # Print the stats
-        logging.info(f"Total size: {total_size/1024/1024/1024} megabytes") #of downloaded or verified files.
+        logging.info(f"Total size: {total_size/1024/1024/1024} gigabytes") #of downloaded or verified files.
         logging.info(f"Total file records: {total_files}")
         logging.info(f"Total image records: {total_images}")
         logging.info(f"Total video records: {total_videos}")
@@ -676,7 +683,7 @@ if __name__ == "__main__":
 
         # Sub-parser for fetch_only
         fetch_parser = subparsers.add_parser('fetch_only', help='Refresh the index by fetching a new one from the server')
-        fetch_parser.add_argument('--start_date', type=str, default='1800-01-01', required=True, help='Start date in the format YYYY-MM-DD')
+        fetch_parser.add_argument('--start_date', type=str, default=(datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d'), required=True, help='Start date in the format YYYY-MM-DD')
         fetch_parser.add_argument('--end_date', type=str, default=(datetime.now(timezone.utc) + timedelta(days=1)).strftime('%Y-%m-%d'), required=True, help='End date in the format YYYY-MM-DD')#default end_date now
         fetch_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
 
@@ -685,7 +692,7 @@ if __name__ == "__main__":
         download_parser.add_argument('--start_date', type=str, default='1800-01-01', required=False, help='Start date in the format YYYY-MM-DD')
         download_parser.add_argument('--end_date', type=str, default=(datetime.now(timezone.utc) + timedelta(days=1)).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
         download_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
-        download_parser.add_argument('--num_workers', type=int, default=2, required=False, help='Number of worker threads for downloading images')
+        download_parser.add_argument('--num_workers', type=int, default=1, required=False, help='Number of worker threads for downloading images')
         
 
         # Sub-parser for stats_only, validate_only, scan_only, auth
@@ -694,21 +701,21 @@ if __name__ == "__main__":
             command_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
             command_parser.add_argument('--start_date', type=str, default='1800-01-01', required=False, help='Start date in the format YYYY-MM-DD')
             command_parser.add_argument('--end_date', type=str, default=(datetime.now(timezone.utc) + timedelta(days=1)).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
-            command_parser.add_argument('--num_workers', type=int, default=2, required=False, help='Number of worker threads for downloading images')
+            command_parser.add_argument('--num_workers', type=int, default=1, required=False, help='Number of worker threads for downloading images')
         
         # Sub-parser for download
         run_all_parser = subparsers.add_parser('download', help='Fetch new items and download them and report stats in sequence')
-        run_all_parser.add_argument('--start_date', type=str, default='1800-01-01', required=False, help='Start date in the format YYYY-MM-DD')
+        run_all_parser.add_argument('--start_date', type=str, default=(datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d'), required=False, help='Start date in the format YYYY-MM-DD')
         run_all_parser.add_argument('--end_date', type=str, default=(datetime.now(timezone.utc) + timedelta(days=1)).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
         run_all_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
-        run_all_parser.add_argument('--num_workers', type=int, default=2, required=False, help='Number of worker threads for downloading images')
+        run_all_parser.add_argument('--num_workers', type=int, default=1, required=False, help='Number of worker threads for downloading images')
         
         # Sub-parser for run_all
         run_all_parser = subparsers.add_parser('run_all', help='Run scan, fetch, download, validate, and report stats in sequence')
         run_all_parser.add_argument('--start_date', type=str, default='1800-01-01', required=True, help='Start date in the format YYYY-MM-DD')
         run_all_parser.add_argument('--end_date', type=str, default=(datetime.now(timezone.utc) + timedelta(days=1)).strftime('%Y-%m-%d'), required=False, help='End date in the format YYYY-MM-DD')#default end_date now
         run_all_parser.add_argument('--backup_path', type=str, required=True, help='Path to the folder where you want to save the backup')
-        run_all_parser.add_argument('--num_workers', type=int, default=2, help='Number of worker threads for downloading images')
+        run_all_parser.add_argument('--num_workers', type=int, default=1, help='Number of worker threads for downloading images')
 
         args = parser.parse_args()
 
@@ -770,7 +777,7 @@ if __name__ == "__main__":
         traceback.print_exc()
 
 
-    #sample usage: 
+#sample usage: 
 #python google_photos_downloader.py fetch_only --start_date 2023-01-01 --end_date 2023-12-31 --backup_path C:\users\alexw\onedrive\gphotos
 #python google_photos_downloader.py download_missing --backup_path C:\users\alexw\onedrive\gphotos --num_workers 5
 #python google_photos_downloader.py stats_only --backup_path C:\users\alexw\onedrive\gphotos
@@ -780,3 +787,4 @@ if __name__ == "__main__":
 #python google_photos_downloader.py run_all --start_date 2023-01-01 --end_date 2023-12-31 --backup_path C:\users\alexw\onedrive\gphotos --num_workers 5
 #python google_photos_downloader.py download --backup_path c:\users\alexw\onedrive\gphotos --num_workers 1
 
+#python C:\Users\alexw\OneDrive\github\GooglePhotoSync\google_photos_downloader.py download --start_date 2023-08-02 --backup_path C:\users\alexw\onedrive\gphotos
