@@ -380,18 +380,7 @@ class GooglePhotosDownloader:
     def validate_repository(self): #this method is used to validate the repository by checking the index against the actual files in the repository.
         validator_start_time = time.time()
 
-        self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
-        if os.path.exists(self.all_media_items_path):
-            self.all_media_items = {}
-            try:
-                with open(self.all_media_items_path, 'r') as f:
-                    self.all_media_items = json.load(f)
-            except json.JSONDecodeError:
-                logging.info("VALIDATOR: There was an error decoding the JSON file. Please check the file format.")
-            logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
-
-        else:
-            logging.info("VALIDATOR: No existing media items found.")
+        self.load_index_from_file()
 
         logging.info(f"VALIDATOR: Number of items loaded to all_media_items for checking existing file paths in index: {len(self.all_media_items)}")
 
@@ -408,11 +397,11 @@ class GooglePhotosDownloader:
                     if file_path_to_verify is not None and os.path.exists(file_path_to_verify):
                         validated_count += 1
                         validated_files.append(file_path_to_verify)
-                        #to do: set status to "verified"
+                        item['status'] = "verified" # Set status to "verified"
                     else:
                         missing_count += 1
                         missing_files.append(file_path_to_verify)
-                        #to do: set status to "missing"
+                        item['status'] = "missing" # Set status to "missing"
                         
                 except:
                     logging.info(f"Error verifying file {file_path_to_verify}")
@@ -421,13 +410,6 @@ class GooglePhotosDownloader:
         logging.info(f"VALIDATOR: Verified {validated_count} indexed file paths and found {missing_count} missing files.")
         logging.info(f'VALIDATOR: The last validated file path was {file_path_to_verify}')
 
-        with open('validated_files.txt', 'w') as f:
-            for item in validated_files:
-                f.write("%s\n" % item)
-
-        with open('missing_files.txt', 'w') as f:
-            for item in missing_files:
-                f.write("%s\n" % item)
         # Now let's find extraneous files  This should possibly be the a separate method called find_extraneous_files
         # or part of the scandisk_and_get_filepaths_and_filenames method.
         extraneous_files = []
@@ -443,43 +425,54 @@ class GooglePhotosDownloader:
 
         # Log the number of extraneous files
         logging.info(f"VALIDATOR: Found {len(extraneous_files)} extraneous files.")
+        if len(extraneous_files) >= 1:
 
-        # Save the list of extraneous files to a file
-        with open('extraneous_files.txt', 'w') as f:
-            for file in extraneous_files:
-                f.write("%s\n" % file)
-        if len(extraneous_files) == 0:
-            return
-        #ask user whether to delete, relocate or leave files alone
-        user_input = input("Would you like to delete, relocate or leave alone the extraneous files? (d/r/l): ")
-        if user_input == 'd':
-            for file in extraneous_files:
-                os.remove(file)
-            logging.info("Extraneous files deleted")
-        elif user_input == 'r':
-            # ask user for new directory
-            new_directory = input("Enter the new directory: ")
-            for file in extraneous_files:
-                # Get the relative path of the file
-                rel_path = os.path.relpath(file, self.backup_path)
-                # Create the new path for the file
-                new_filepath = os.path.join(new_directory, rel_path)
-                # Create any necessary directories
-                os.makedirs(os.path.dirname(new_filepath), exist_ok=True)
-                # Move the file
-                os.rename(file, new_filepath)
-            logging.info(f"Extraneous files moved to {new_directory}")
+            # Save the list of extraneous files to a file
+            with open('extraneous_files.txt', 'w') as f:
+                for file in extraneous_files:
+                    f.write("%s\n" % file)
 
-        elif user_input == 'l':
-            logging.info("Leaving files alone")
-        else:
-            logging.info("Invalid input. Leaving files alone")
+            #ask user whether to delete, relocate or leave files alone
+            user_input = input("Would you like to delete, relocate or leave alone the extraneous files? (d/r/l): ")
+            if user_input == 'd':
+                for file in extraneous_files:
+                    os.remove(file)
+                logging.info("Extraneous files deleted")
+            elif user_input == 'r':
+                # ask user for new directory
+                new_directory = input("Enter the new directory: ")
+                for file in extraneous_files:
+                    # Get the relative path of the file
+                    rel_path = os.path.relpath(file, self.backup_path)
+                    # Create the new path for the file
+                    new_filepath = os.path.join(new_directory, rel_path)
+                    # Create any necessary directories
+                    os.makedirs(os.path.dirname(new_filepath), exist_ok=True)
+                    # Move the file
+                    os.rename(file, new_filepath)
+                logging.info(f"Extraneous files moved to {new_directory}")
+
+            elif user_input == 'l':
+                logging.info("Leaving files alone")
+            else:
+                logging.info("Invalid input. Leaving files alone")
             
+
+        # Update the existing items with the modified items from all_media_items
+        existing_items_dict = self.all_media_items
+
+        for item_id, item in self.all_media_items.items():
+            if item['id'] in existing_items_dict:
+                existing_items_dict[item['id']].update(item)  # Update existing item
+
+        # Write the updated items back to the file
+        with open(self.downloaded_items_path, 'w') as f:
+            json.dump(existing_items_dict, f, indent=4)
+
         validator_end_time = time.time()
         self.validator_elapsed_time = validator_end_time - validator_start_time
         logging.info(f"VALIDATOR: Total time to validate repository: {self.validator_elapsed_time} seconds")
-        self.save_index_to_file(missing_files)
-        time.sleep(1.5)
+
 
     def download_image(self, item):
         #logging.info(f"DOWNLOADER: considering {item['filename']}...")
@@ -511,7 +504,7 @@ class GooglePhotosDownloader:
 
                 if 'video' in item['mimeType']:  # Check if 'video' is in mimeType. need to account for motion photos and other media types.
                     image_url = image['baseUrl'] + '=dv' #motion videos also dowlnoad as =dv. Stil testing.
-                if 'image' in item['mimeType']:
+                elif 'image' in item['mimeType']:
                     image_url = image['baseUrl'] + '=d'
                 else:
                     image_url = image['baseUrl'] + '=d'
@@ -666,11 +659,11 @@ class GooglePhotosDownloader:
 
     def load_index_from_file(self): #to implement throughout.
 
-        all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
-        if os.path.exists(all_media_items_path):
+        self.all_media_items_path = os.path.normpath(os.path.join(self.backup_path, 'DownloadItems.json'))
+        if os.path.exists(self.all_media_items_path):
             self.all_media_items = {}
             try:
-                with open(all_media_items_path, 'r') as f:
+                with open(self.all_media_items_path, 'r') as f:
                     self.all_media_items = json.load(f)
                 logging.info(f"Loaded {len(self.all_media_items)} existing media items from file.")
             except json.JSONDecodeError:
@@ -737,7 +730,7 @@ if __name__ == "__main__":
             downloader.validate_repository()
 
         elif args.command == 'scan_only':
-            downloader = GooglePhotosDownloader(args.backup_path)
+            downloader = GooglePhotosDownloader(args.start_date, args.end_date, args.backup_path, args.num_workers)
             downloader.scandisk_and_get_filepaths_and_filenames()
 
         elif args.command == 'download_missing':
