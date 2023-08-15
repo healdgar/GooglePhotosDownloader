@@ -5,7 +5,7 @@ import json
 import re
 from collections import defaultdict, OrderedDict
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog      
 
 data = {}
 reverse_sort_order = False
@@ -236,42 +236,68 @@ def replace_values(data, key_path, pattern, replacement, selected_fields=[]): #n
         except (KeyError, IndexError, ValueError):
             pass  # Skip if the key or index is not found
 
+def rename_key(data, old_key_path, new_key_name):
+    keys = old_key_path.split('.')  # Split the key path into individual keys
+    for item_id, item in data.items():
+        sub_data = item
+        try:
+            # Navigate to the parent of the target key
+            for key in keys[:-1]:
+                if isinstance(sub_data, list):
+                    index = int(key[1:-1])
+                    sub_data = sub_data[index]
+                else:
+                    sub_data = sub_data[key]
+            # Rename the target key
+            old_key = keys[-1]
+            sub_data[new_key_name] = sub_data.pop(old_key)
+        except (KeyError, IndexError, ValueError):
+            pass  # Skip if the key or index is not found
+
+def rename_key_gui():
+    old_key_path = old_key_entry.get()
+    new_key_name = new_key_entry.get()
+    rename_key(data, old_key_path, new_key_name)
+    display_keys()  # Refresh the keys display
+    result_text.delete(1.0, tk.END)
+    result_text.insert(tk.END, f"Renamed key '{old_key_path}' to '{new_key_name}'.\n")
 
 
 root = tk.Tk()
 root.title("JSON Doctor")
+root.resizable(True, True)
 selected_key_var = tk.StringVar()  # StringVar to store the selected key
 selected_key_var.set(selected_key)  # Initialize the StringVar with the temporary variable
 
-load_button = tk.Button(root, text="Load JSON File", command=load_file)
-load_button.pack(fill=tk.X)
+frame1 = tk.Frame(root)
+frame1.pack(fill=tk.X)
+load_button = tk.Button(frame1, text="Load JSON File", command=load_file)
+load_button.pack(side=tk.LEFT)
+save_button = tk.Button(frame1, text="Save Changes", command=save_file)
+save_button.pack(side=tk.LEFT)
+save_as_button = tk.Button(frame1, text="Save As", command=save_file_as)
+save_as_button.pack(side=tk.LEFT)
 
 keys_listbox = tk.Listbox(root)
 keys_listbox.bind('<<ListboxSelect>>', lambda event: update_selected_key())
 keys_listbox.pack(fill=tk.X)
 
-# Frame to hold the tally and reverse sort buttons
 tally_frame = tk.Frame(root)
 tally_frame.pack(fill=tk.X)
-
 tally_button = tk.Button(tally_frame, text="Tally Values", command=tally_values_gui)
 tally_button.pack(side=tk.LEFT)
-
 reverse_sort_button = tk.Button(tally_frame, text="Reverse Sort Order", command=toggle_sort_order)
 reverse_sort_button.pack(side=tk.LEFT)
 
 pattern_label = tk.Label(root, text="Regex Pattern:")
 pattern_label.pack(fill=tk.X)
-
 pattern_entry = tk.Entry(root)
 pattern_entry.pack(fill=tk.X)
-
 search_button = tk.Button(root, text="Search by Regex", command=search_values_gui)
 search_button.pack(fill=tk.X)
 
 fields_listbox_label = tk.Label(root, text="Select Fields to Display:")
 fields_listbox_label.pack(fill=tk.X)
-
 fields_listbox = tk.Listbox(root, selectmode=tk.MULTIPLE)
 fields_listbox.pack(fill=tk.X)
 
@@ -279,22 +305,27 @@ replace_label = tk.Label(root, text="Replace With:")
 replace_label.pack(fill=tk.X)
 replace_entry = tk.Entry(root)
 replace_entry.pack(fill=tk.X)
-
 replace_button = tk.Button(root, text="Replace by Regex", command=replace_values_gui)
 replace_button.pack(fill=tk.X)
 
-# Frame to hold the save and save as buttons
-save_frame = tk.Frame(root)
-save_frame.pack(fill=tk.X)
+frame2 = tk.Frame(root)
+frame2.pack(fill=tk.X)
+old_key_label = tk.Label(frame2, text="Old Key Name/Path:")
+old_key_label.grid(row=0, column=0)
+old_key_entry = tk.Entry(frame2)
+old_key_entry.grid(row=0, column=1)
+new_key_label = tk.Label(frame2, text="New Key Name:")
+new_key_label.grid(row=1, column=0)
+new_key_entry = tk.Entry(frame2)
+new_key_entry.grid(row=1, column=1)
+rename_button = tk.Button(frame2, text="Rename Key", command=rename_key_gui)
+rename_button.grid(row=2, columnspan=2)
+frame2.grid_columnconfigure(1, weight=1)  # Make the second column expandable
 
-save_button = tk.Button(save_frame, text="Save Changes", command=save_file)
-save_button.pack(side=tk.LEFT)
-
-save_as_button = tk.Button(save_frame, text="Save As", command=save_file_as)
-save_as_button.pack(side=tk.LEFT)
-
-result_text = tk.Text(root, wrap=tk.WORD)
+scrollbar = tk.Scrollbar(root)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+result_text = tk.Text(root, wrap=tk.WORD, yscrollcommand=scrollbar.set)
 result_text.pack(fill=tk.BOTH, expand=1)
+scrollbar.config(command=result_text.yview)
 
 root.mainloop()
-
